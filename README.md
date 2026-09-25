@@ -41,12 +41,30 @@ The image is upstream OpenWrt 24.10.8 for the board, plus:
 Proven on a GL-MT300N-V2 on 2026-09-24: stock GL.iNet 4.3.28 → upstream OpenWrt 24.10.8, back on its
 uplink with no second step.
 
+## The DN device API
+
+GL.iNet's closed RPC is gone on DockNeighbor OS. In its place, `dn-net` reads and changes the router's network
+settings as JSON, in the shapes of the app's network-device driver, and the hub-lite serves it on its port-8722
+door as `/api/hub/net/*` (the route table is in DockNeighbor-Hub's `hub-lite/hub-lite-api.sh`). Reading needs
+monitor access and changing needs configure access; a monitor sees the Wi-Fi settings without their keys.
+
+| Area | Verbs |
+|---|---|
+| Internet | `wan`; the Wi-Fi uplink: `uplink-scan`, `uplink-get`, `uplink-join`, `uplink-disconnect`, `uplink-saved`, `uplink-forget` |
+| LAN and Wi-Fi | `lan-get`, `lan-set`, `wifi-get`, `wifi-set` |
+| Clients | `clients`, `client-block`, `reservations`, `reservation-add`, `reservation-remove` |
+| Mode | `mode-get`, `mode-set`: `router` (firewall and NAT) or `bridge` (the WAN port joins the LAN, no firewall, NAT or DHCP). Bridge mode reverts to router mode by itself if the bridge gets no address within 180 s. |
+| Device | `reboot`; `admin-password` (`{current, next}`): changes root's password only after `dn-auth` proves the current one. |
+
+A Wi-Fi uplink's firewall follows its role: `lan` when the router joined the boat's own network (open like the
+LAN), `wan` for an internet source such as marina Wi-Fi (restricted, the default).
+
 ## Upgrades: two levels
 
 | Level | Replaces | From | Keeps |
 |---|---|---|---|
 | **1: hub-lite** | the `brvg-hub-lite` package | DockNeighbor-Hub's signed opkg feed (key `b0ff2bec314c57d3`), via the hub-lite's own `self_update` | everything |
-| **1: dn-\* packages** | DockNeighbor OS's own packages (`dn-handoff`, `dn-os-upgrade`, `dn-hub-lite-os`) | this repo's signed `dn_os` feed (key `1c44072d07e3e228`), via `dn-pkg-upgrade` | everything |
+| **1: dn-\* packages** | DockNeighbor OS's own packages (`dn-handoff`, `dn-os-upgrade`, `dn-hub-lite-os`, `dn-net`, `dn-auth`) | this repo's signed `dn_os` feed (key `1c44072d07e3e228`), via `dn-pkg-upgrade` | everything |
 | **2: OS** | the whole firmware | `dn-os-upgrade`: this repo's signed release channel (key `3420e953f030f5a8`) | settings, the hub-lite's config and member keys |
 
 The image is a known-good baseline for the kernel, drivers and base OS. Every package defined in `feed/` is also

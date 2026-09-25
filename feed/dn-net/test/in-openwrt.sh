@@ -254,6 +254,34 @@ rm -f /tmp/fx/if.lan
 DN_NET_WATCH_SECS=2 DN_NET_WATCH_STEP=1 sh "$WATCH"; eq "watch: no address in time reverts" "$?" 1
 eq "watch: ...to router mode, every config exactly as before" "$(j "$(net mode-get)" '@.mode') $(sums)" "router $before"
 
+echo "admin-password"
+export DN_NET_VERIFY_ROOT=/dnauth/verify-root DN_NET_WRONG_DELAY=0
+vr() { printf '%s\n' "$1" | "$DN_NET_VERIFY_ROOT"; echo $?; }
+sed -i 's/^root:[^:]*:/root::/' /etc/shadow
+r=$(net admin-password '{"current":"","next":"first pass"}'); eq "no password yet: the empty current is right" "$? $(j "$r" '@.ok')" "0 true"
+eq "...and the new one is root's now" "$(vr 'first pass')" 0
+cp /etc/shadow /tmp/shadow.before
+net admin-password '{"current":"not it","next":"x2345678"}' >/dev/null; eq "a wrong current password is refused" "$?" 2
+eq "...saying so" "$(cat /tmp/err)" "the current password is wrong"
+eq "...and nothing changed" "$(cmp -s /etc/shadow /tmp/shadow.before && echo same)" same
+net admin-password '{"next":"x2345678"}' >/dev/null; eq "a missing current password is a wrong one" "$?" 2
+P='a \"quoted\" \\ $HOME `id` é'
+r=$(net admin-password "{\"current\":\"first pass\",\"next\":\"$P\"}"); eq "the right current password changes it" "$?" 0
+eq "...to exactly the new one: quotes, backslash, \$, backticks, UTF-8" "$(vr 'a "quoted" \ $HOME `id` é')" 0
+eq "...and the old one no longer works" "$(vr 'first pass')" 1
+cp /etc/shadow /tmp/shadow.before
+for body in '{"current":"x","next":""}' '{"current":"x"}' "{\"current\":\"x\",\"next\":\"a\\tb\"}" 'not json' \
+            "{\"current\":\"x\",\"next\":\"$(head -c 129 /dev/zero | tr '\0' a)\"}" \
+            "{\"current\":\"x\",\"next\":\"$(i=0; while [ $i -lt 65 ]; do printf 'é'; i=$((i + 1)); done)\"}"; do
+	net admin-password "$body" >/dev/null; eq "refused ($(head -c 60 /tmp/err))" "$?" 2
+done
+eq "...and none of those changed anything" "$(cmp -s /etc/shadow /tmp/shadow.before && echo same)" same
+r=$(net admin-password "{\"current\":\"$P\",\"next\":\"$(head -c 128 /dev/zero | tr '\0' b)\"}"); eq "128 bytes is allowed" "$?" 0
+eq "...and it reads back" "$(vr "$(head -c 128 /dev/zero | tr '\0' b)")" 0
+cp /etc/shadow /tmp/shadow.before
+DN_NET_VERIFY_ROOT=/nonexistent net admin-password '{"current":"","next":"y2345678"}' >/dev/null
+eq "no dn-auth: a failure, never an unchecked change" "$? $(cmp -s /etc/shadow /tmp/shadow.before && echo same)" "1 same"
+
 echo "misc"
 eq "reboot: answers first (nothing reboots in a test)" "$(j "$(net reboot)" '@.status')" "rebooting"
 net frobnicate >/dev/null; eq "an unknown verb is a bad request" "$?" 2
