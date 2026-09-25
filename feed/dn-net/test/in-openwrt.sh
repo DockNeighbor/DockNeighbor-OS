@@ -20,7 +20,8 @@ cat > /tmp/stub/iwinfo <<'EOF'
 #!/bin/sh
 case "$2" in
   scan) cat /tmp/fx/scan ;;
-  freqlist) printf '* 2.412 GHz (Channel 1)\n  2.437 GHz (Channel 6)\n  2.462 GHz (Channel 11)\n' ;;
+  # 24.10's real freqlist format (bench MT300N-V2, 2026-09-25).
+  freqlist) printf '* 2.412 GHz (Band: 2.4 GHz, Channel 1) [NO_HT40-, NO_80MHZ, NO_160MHZ]\n  2.437 GHz (Band: 2.4 GHz, Channel 6) [NO_HT40-]\n  2.462 GHz (Band: 2.4 GHz, Channel 11) [NO_HT40+]\n' ;;
   assoclist) cat /tmp/fx/assoc 2>/dev/null ;;
   info) printf 'phy0-sta0 ESSID: "Boatnet"\n          Mode: Client  Channel: 6 (2.437 GHz)  HT Mode: HT20\n          Signal: -48 dBm  Noise: -95 dBm\n' ;;
 esac
