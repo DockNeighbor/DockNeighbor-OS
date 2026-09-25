@@ -44,6 +44,10 @@ if [ -n "$up" ]; then
 		json_add_string ssid "$(g wireless.$up.ssid)"
 		json_add_string enc "$(g wireless.$up.encryption)"
 		json_add_string key "$(g wireless.$up.key)"
+		# lan = this router joins the boat's own network as the hub-lite; wan = a Wi-Fi internet uplink
+		# (e.g. a marina). The vendor config can't tell them apart, so the app says which: UPLINK_ROLE.
+		# Unset leaves it to the firmware's default (wan: restricted).
+		[ -n "${UPLINK_ROLE:-}" ] && json_add_string role "$UPLINK_ROLE"
 	json_close_object
 fi
 json_add_array reservations
