@@ -61,6 +61,8 @@ umask 077
 json_dump > "$T/etc/dn/site.json"
 cp /etc/dropbear/authorized_keys "$T/etc/dropbear/" 2>/dev/null || true
 cp /etc/dropbear/dropbear_ed25519_host_key "$T/etc/dropbear/" 2>/dev/null || true
+# A router already running the hub-lite keeps its enrollment (device token, member keys) across the flash.
+for f in /etc/brvg-hub-lite.conf /etc/brvg-hub-lite.keys; do [ -f "$f" ] && cp -p "$f" "$T/etc/"; done
 [ -s "$T/etc/dn/site.json" ] || { echo "handoff incomplete" >&2; exit 1; }
 tar czf /tmp/dn-handoff.tgz -C "$T" etc || { echo "tar failed" >&2; exit 1; }
 rm -rf "$T"

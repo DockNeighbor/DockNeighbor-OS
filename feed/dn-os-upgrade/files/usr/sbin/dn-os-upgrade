@@ -1,0 +1,78 @@
+#!/bin/sh
+# dn-os-upgrade: the LEVEL 2 upgrade, the whole firmware. (Level 1 is the hub-lite package alone, via opkg
+# from the Hub's signed feed.) Settings are kept across it, as a normal sysupgrade keeps them.
+#
+#   dn-os-upgrade check            JSON: {"current","available","upgrade","hubLite"} from the signed channel
+#   dn-os-upgrade apply [--detach] check, download, verify, test, then sysupgrade (the router reboots).
+#                                  With --detach every check still runs first, so a caller gets any error
+#                                  back; only the final sysupgrade runs in the background.
+#
+# Trust: the channel manifest must be signed by a key in /etc/dn/os-keys, name this board and this profile,
+# and carry a version STRICTLY newer than the running one (a replayed older manifest can't downgrade). The
+# image must then match the manifest's sha256 and pass `sysupgrade -T`.
+. /etc/dn-release
+. /usr/share/libubox/jshn.sh
+KEYS=/etc/dn/os-keys
+W=/tmp/dn-os-upgrade
+
+die() {
+	logger -t dn-os-upgrade "failed: $*"
+	echo "dn-os-upgrade: $*" >&2
+	exit 1
+}
+fetch() { uclient-fetch -q -T 60 -O "$2" "$1" 2>/dev/null || die "download failed: $1"; }
+m() { jsonfilter -i "$W/manifest.json" -e "$1"; }
+
+check() {
+	[ -n "${DN_OS_CHANNEL_URL:-}" ] || die "no DN_OS_CHANNEL_URL in /etc/dn-release"
+	rm -rf "$W"; mkdir -p "$W"
+	fetch "$DN_OS_CHANNEL_URL" "$W/manifest.json"
+	fetch "$DN_OS_CHANNEL_URL.sig" "$W/manifest.json.sig"
+	usign -V -q -P "$KEYS" -m "$W/manifest.json" -x "$W/manifest.json.sig" || die "the channel manifest is not signed by a DockNeighbor OS key"
+	board=$(cat /tmp/sysinfo/board_name)
+	[ "$(m @.board)" = "$board" ] || die "the manifest is for '$(m @.board)', this is '$board'"
+	[ "$(m @.profile)" = "$DN_OS_PROFILE" ] || die "the manifest is for profile '$(m @.profile)', this is '$DN_OS_PROFILE'"
+	available=$(m @.version)
+	[ -n "$available" ] || die "the manifest has no version"
+	upgrade=0
+	opkg compare-versions "$available" '>>' "$DN_OS_VERSION" && upgrade=1
+}
+
+case "${1:-}" in
+check)
+	check
+	json_init
+	json_add_string current "$DN_OS_VERSION"
+	json_add_string available "$available"
+	json_add_boolean upgrade "$upgrade"
+	json_add_string hubLite "$(m @.hubLite)"
+	json_dump
+	;;
+apply)
+	check
+	[ "$upgrade" = 1 ] || die "already at $DN_OS_VERSION (channel: $available)"
+	url=$(m @.image); sha=$(m @.sha256); size=$(m @.size)
+	[ -n "$url" ] && [ -n "$sha" ] && [ -n "$size" ] || die "the manifest has no image, sha256 or size"
+	# The image goes to RAM (/tmp); keep room for sysupgrade itself.
+	avail=$(awk '/^MemAvailable:/{print $2 * 1024}' /proc/meminfo)
+	[ "$avail" -gt $((size * 3)) ] || die "not enough free memory for a $size-byte image"
+	fetch "$url" "$W/image.bin"
+	[ "$(sha256sum "$W/image.bin" | cut -d' ' -f1)" = "$sha" ] || die "the image does not match the manifest's sha256"
+	sysupgrade -T "$W/image.bin" >/dev/null 2>&1 || die "sysupgrade rejects the image for this router"
+	# The image carries its own hub-lite; if Level 1 put a newer one on, put it back after the upgrade
+	# (dn-hub-lite-restore, from /etc/dn/hub-lite.min, which this package keeps across the upgrade).
+	hl=$(opkg status brvg-hub-lite 2>/dev/null | sed -n 's/^Version: //p')
+	[ -n "$hl" ] && echo "$hl" > /etc/dn/hub-lite.min
+	logger -t dn-os-upgrade "upgrading DockNeighbor OS $DN_OS_VERSION -> $available (keeping settings)"
+	echo "dn-os-upgrade: $DN_OS_VERSION -> $available, the router reboots now"
+	if [ "${2:-}" = --detach ]; then
+		(sleep 3; sysupgrade "$W/image.bin") </dev/null >/dev/null 2>&1 &
+	else
+		exec sysupgrade "$W/image.bin"
+	fi
+	;;
+*)
+	echo "usage: dn-os-upgrade check | apply [--detach]" >&2
+	exit 2
+	;;
+esac

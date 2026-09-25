@@ -25,11 +25,15 @@ jobs:
           set -eu
           for f in handoff/read-glinet.sh feed/dn-handoff/files/usr/libexec/dn-handoff/apply \
                    feed/dn-handoff/files/etc/uci-defaults/05-dn-handoff profiles/hub-lite/files/etc/uci-defaults/95-dn-hub-lite \
+                   feed/dn-os-upgrade/files/usr/sbin/dn-os-upgrade profiles/hub-lite/files/usr/libexec/dn-hub-lite/restore \
+                   profiles/hub-lite/files/etc/init.d/dn-hub-lite-restore scripts/release-manifest.sh \
                    scripts/build-hub-lite.sh scripts/check-hub-lite-image.sh; do
             sh -n "$f"
           done
       - name: Handoff renderer, on real OpenWrt userland
         run: sh handoff/test/apply.test.sh
+      - name: OS upgrader (level 2), on real OpenWrt userland
+        run: sh feed/dn-os-upgrade/test/upgrade.test.sh
 
   hub-lite:
     needs: tests

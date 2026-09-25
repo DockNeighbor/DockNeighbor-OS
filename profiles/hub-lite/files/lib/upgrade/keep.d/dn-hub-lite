@@ -1,0 +1,3 @@
+# The hub-lite's own state across a full-OS upgrade: its device token/config and the member keys.
+/etc/brvg-hub-lite.conf
+/etc/brvg-hub-lite.keys
