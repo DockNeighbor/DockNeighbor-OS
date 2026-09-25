@@ -46,7 +46,11 @@ hl_sha=$(awk -v v="$HUB_LITE_VERSION" '
 hl_ipk="brvg-hub-lite_${HUB_LITE_VERSION}_all.ipk"
 fetch "$HUB_LITE_FEED/$hl_ipk" "$hl_ipk" "$hl_sha"
 
-# --- SDK: dropbear with Ed25519, and our dn-handoff package --------------------------------------------
+# --- SDK: dropbear with Ed25519, and every package defined in feed/ -----------------------------------
+# Our packages are exactly the ones whose Makefile is in this checkout's feed/, never whatever a reused SDK has
+# lying around in bin/.
+dn_pkgs=$(sed -n 's/^PKG_NAME:=//p' "$root"/feed/*/Makefile | sort)
+[ -n "$dn_pkgs" ] || { echo "build: no packages found in feed/" >&2; exit 1; }
 sdk="$work/${SDK_FILE%.tar.zst}"
 [ -d "$sdk" ] || tar -I zstd -xf "$dl/$SDK_FILE" -C "$work"
 cd "$sdk"
@@ -56,7 +60,7 @@ cd "$sdk"
 if [ -d feeds/base/.git ]; then ./scripts/feeds update -i base >/dev/null; else ./scripts/feeds update base >/dev/null; fi
 [ "$(git -C feeds/base rev-parse HEAD)" = "$OPENWRT_COMMIT" ] || { echo "build: feeds/base is not at $OPENWRT_COMMIT" >&2; exit 1; }
 ./scripts/feeds update dn >/dev/null
-./scripts/feeds install dropbear dn-handoff dn-os-upgrade >/dev/null
+./scripts/feeds install dropbear $dn_pkgs >/dev/null
 # The ImageBuilder must pick OUR dropbear over the identical-version upstream one in its package feed, so ours
 # carries a higher release. Reset first: a reused SDK already has the bump.
 mk=feeds/base/package/network/services/dropbear/Makefile
@@ -64,33 +68,33 @@ git -C feeds/base checkout -q -- package/network/services/dropbear/Makefile
 rel=$(sed -n 's/^PKG_RELEASE:=\([0-9][0-9]*\)$/\1/p' "$mk")
 [ -n "$rel" ] || { echo "build: can't read dropbear's PKG_RELEASE" >&2; exit 1; }
 sed -i "s/^PKG_RELEASE:=$rel\$/PKG_RELEASE:=$((rel + 100))/" "$mk"
-cat > .config <<EOF
-CONFIG_PACKAGE_dropbear=m
-CONFIG_DROPBEAR_ED25519=y
-CONFIG_PACKAGE_dn-handoff=m
-CONFIG_PACKAGE_dn-os-upgrade=m
-EOF
+{ echo CONFIG_PACKAGE_dropbear=m; echo CONFIG_DROPBEAR_ED25519=y; for p in $dn_pkgs; do echo "CONFIG_PACKAGE_$p=m"; done; } > .config
 make defconfig >/dev/null
 # dropbear is a target default, so the SDK selects it =y; either way it is built as a package here.
-for sym in 'CONFIG_DROPBEAR_ED25519=y' 'CONFIG_PACKAGE_dropbear=[ym]' 'CONFIG_PACKAGE_dn-handoff=[ym]' 'CONFIG_PACKAGE_dn-os-upgrade=[ym]'; do
+for sym in 'CONFIG_DROPBEAR_ED25519=y' 'CONFIG_PACKAGE_dropbear=[ym]' $(for p in $dn_pkgs; do echo "CONFIG_PACKAGE_$p=[ym]"; done); do
   grep -q "^$sym\$" .config || { echo "build: $sym did not survive defconfig" >&2; exit 1; }
 done
 rm -rf bin
-pkgs="package/dropbear/compile package/dn-handoff/compile package/dn-os-upgrade/compile"
+pkgs="package/dropbear/compile $(for p in $dn_pkgs; do printf 'package/%s/compile ' "$p"; done)"
 make -j"$jobs" $pkgs || make -j1 V=s $pkgs
 # dropbear, a target default package, lands under bin/targets/; feed packages under bin/packages/.
 db_ipk=$(find bin -name "dropbear_*-r$((rel + 100))_*.ipk" | head -1)
-dh_ipk=$(find bin -name 'dn-handoff_*_all.ipk' | head -1)
-du_ipk=$(find bin -name 'dn-os-upgrade_*_all.ipk' | head -1)
-[ -n "$db_ipk" ] && [ -n "$dh_ipk" ] && [ -n "$du_ipk" ] || { echo "build: the SDK produced no dropbear/dn-handoff/dn-os-upgrade package" >&2; exit 1; }
+[ -n "$db_ipk" ] || { echo "build: the SDK produced no dropbear package" >&2; exit 1; }
+# The dn_os feed: exactly one .ipk per package in feed/.
+rm -rf "$out-feed"; mkdir -p "$out-feed"
+for p in $dn_pkgs; do
+  f=$(find bin -name "${p}_*.ipk" | head -1)
+  [ -n "$f" ] || { echo "build: the SDK produced no $p package" >&2; exit 1; }
+  cp "$f" "$out-feed/"
+done
 
 # --- ImageBuilder ---------------------------------------------------------------------------------------
 ib="$work/${IB_FILE%.tar.zst}"
 [ -d "$ib" ] || tar -I zstd -xf "$dl/$IB_FILE" -C "$work"
 cd "$ib"
 rm -rf packages/*.ipk bin files
-cp "$sdk/$db_ipk" "$sdk/$dh_ipk" "$sdk/$du_ipk" "$dl/$hl_ipk" packages/
-cp -R "$prof/files" files
+cp "$sdk/$db_ipk" "$out-feed"/*.ipk "$dl/$hl_ipk" packages/
+mkdir -p files/etc; [ -d "$prof/files" ] && cp -R "$prof/files/." files/
 cat > files/etc/dn-release <<EOF
 DN_OS_PROFILE=hub-lite
 DN_OS_VERSION=$DN_OS_VERSION
@@ -104,6 +108,7 @@ make image PROFILE="$DEVICE" PACKAGES="$PACKAGES" FILES="$ib/files" DISABLED_SER
 img=$(ls bin/targets/$OPENWRT_TARGET/*"$DEVICE"-squashfs-sysupgrade.bin 2>/dev/null | head -1)
 [ -n "$img" ] || { echo "build: no sysupgrade image produced" >&2; exit 1; }
 rm -rf "$out"; mkdir -p "$out"
+mv "$out-feed" "$out/feed"
 cp "$img" "$out/"
 cp bin/targets/$OPENWRT_TARGET/*.manifest "$out/"
 sh "$root/scripts/check-hub-lite-image.sh" "$out/$(basename "$img")"

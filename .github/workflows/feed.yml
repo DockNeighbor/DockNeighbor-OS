@@ -1,0 +1,55 @@
+name: Feed
+
+# Publish the signed dn_os package feed (level 1 for DockNeighbor OS's own dn-* packages) when main changes a
+# package. Routers read it from the rolling `feed` release; nothing installs until a router is told to upgrade
+# (dn-pkg-upgrade). The PR's version guard means a changed package always carries a new version.
+on:
+  push:
+    branches: [main]
+    paths: ['feed/**']
+  workflow_dispatch:
+
+concurrency:
+  group: feed
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tools
+        run: sudo apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends $(cat profiles/hub-lite/build-deps)
+      - uses: actions/cache@v4
+        with:
+          path: build/hub-lite/dl
+          key: hub-lite-dl-${{ hashFiles('profiles/hub-lite/upstream.env') }}
+      # The whole image build, so the packages published are exactly the ones an image passed its checks with.
+      - name: Build
+        run: sh scripts/build-hub-lite.sh
+      - name: Sign the index
+        env:
+          DN_OS_FEED_USIGN_KEY: ${{ secrets.DN_OS_FEED_USIGN_KEY }}
+        run: |
+          set -eu
+          [ -n "$DN_OS_FEED_USIGN_KEY" ] || { echo "::error::DN_OS_FEED_USIGN_KEY is not set"; exit 1; }
+          umask 077; d=$(mktemp -d); trap 'rm -rf "$d"' EXIT; k="$d/dn-os-feed.sec"
+          printf '%s\n' "$DN_OS_FEED_USIGN_KEY" > "$k"
+          sh scripts/publish-feed.sh "$k"
+      - name: Publish to the rolling feed release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release view feed >/dev/null 2>&1 || gh release create feed --latest=false \
+            --title "dn_os package feed (rolling)" --notes "DockNeighbor OS's own packages, signed (key 1c44072d07e3e228). Overwritten on each change to feed/."
+          cd out/hub-lite/feed
+          # Packages first, then the index, then its signature: a router that reads a new index before its
+          # signature fails closed and retries.
+          gh release upload feed ./*.ipk --clobber
+          gh release upload feed Packages Packages.gz --clobber
+          gh release upload feed Packages.sig --clobber

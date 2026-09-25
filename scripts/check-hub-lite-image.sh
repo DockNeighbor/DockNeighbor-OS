@@ -45,6 +45,11 @@ grep -q '^DN_OS_PROFILE=hub-lite$' "$r/etc/dn-release" 2>/dev/null && ok "dn-rel
 grep -q '^option check_signature' "$r/etc/opkg.conf" 2>/dev/null && ok "opkg checks feed signatures (level 1)" || bad "opkg does not check signatures"
 # Level 2 (the whole OS): the upgrader, the release key, the channel, and what must survive it.
 [ -x "$r/usr/sbin/dn-os-upgrade" ] && ok "dn-os-upgrade present (level 2)" || bad "dn-os-upgrade missing"
+[ -x "$r/usr/sbin/dn-pkg-upgrade" ] && [ -x "$r/etc/uci-defaults/94-dn-os-feed" ] && ok "dn-pkg-upgrade + dn_os feed setup (level 1, dn-* packages)" || bad "dn-pkg-upgrade or 94-dn-os-feed missing"
+# Every dn-* package is a real package (so the dn_os feed can upgrade it), not loose image files.
+for p in dn-handoff dn-os-upgrade dn-hub-lite-os; do
+  [ -f "$r/usr/lib/opkg/info/$p.control" ] && ok "package installed: $p" || bad "not installed as a package: $p"
+done
 [ -f "$r/etc/dn/os-keys/3420e953f030f5a8" ] && ok "OS release key 3420e953f030f5a8" || bad "OS release key missing"
 grep -q '^DN_OS_CHANNEL_URL=https://' "$r/etc/dn-release" 2>/dev/null && ok "OS channel set" || bad "no DN_OS_CHANNEL_URL"
 kept=$(sed '/^#/d' "$r"/lib/upgrade/keep.d/* 2>/dev/null)
@@ -57,9 +62,9 @@ ls "$r"/etc/rc.d/S*dn-hub-lite-restore >/dev/null 2>&1 && ok "hub-lite restore a
 [ ! -d "$r/www/luci-static" ] && ok "no LuCI" || bad "LuCI is in the image"
 ls "$r"/etc/rc.d/S*uhttpd >/dev/null 2>&1 && bad "system uhttpd enabled" || ok "system uhttpd disabled"
 [ -x "$r/usr/sbin/uhttpd" ] && ok "uhttpd binary present (hub-lite's own instance)" || bad "uhttpd binary missing"
-# Trust: the only opkg key baked in is OpenWrt's 24.10 release key (the hub-lite key arrives via feed-setup).
+# OpenWrt's 24.10 release key + the dn_os feed key. The hub-lite key arrives via feed-setup at first boot.
 keys=$(ls "$r/etc/opkg/keys" 2>/dev/null | tr '\n' ' ')
-[ "$keys" = "d310c6f2833e97f7 " ] && ok "opkg keys: $keys" || bad "unexpected opkg keys: '${keys}' (a local build key?)"
+[ "$keys" = "1c44072d07e3e228 d310c6f2833e97f7 " ] && ok "opkg keys: $keys" || bad "unexpected opkg keys: '${keys}' (a local build key?)"
 
 [ "$fails" -eq 0 ] || { echo "check: $fails failure(s)"; exit 1; }
 echo "check: all guarantees hold"

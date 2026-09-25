@@ -20,13 +20,18 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Shell syntax
         run: |
           set -eu
           for f in handoff/read-glinet.sh feed/dn-handoff/files/usr/libexec/dn-handoff/apply \
-                   feed/dn-handoff/files/etc/uci-defaults/05-dn-handoff profiles/hub-lite/files/etc/uci-defaults/95-dn-hub-lite \
-                   feed/dn-os-upgrade/files/usr/sbin/dn-os-upgrade profiles/hub-lite/files/usr/libexec/dn-hub-lite/restore \
-                   profiles/hub-lite/files/etc/init.d/dn-hub-lite-restore scripts/release-manifest.sh \
+                   feed/dn-handoff/files/etc/uci-defaults/05-dn-handoff \
+                   feed/dn-os-upgrade/files/usr/sbin/dn-os-upgrade feed/dn-os-upgrade/files/usr/sbin/dn-pkg-upgrade \
+                   feed/dn-os-upgrade/files/etc/uci-defaults/94-dn-os-feed \
+                   feed/dn-hub-lite-os/files/usr/libexec/dn-hub-lite/restore feed/dn-hub-lite-os/files/etc/init.d/dn-hub-lite-restore \
+                   feed/dn-hub-lite-os/files/etc/uci-defaults/95-dn-hub-lite \
+                   scripts/release-manifest.sh scripts/publish-feed.sh scripts/check-feed-versions.sh \
                    scripts/build-hub-lite.sh scripts/check-hub-lite-image.sh; do
             sh -n "$f"
           done
@@ -34,6 +39,11 @@ jobs:
         run: sh handoff/test/apply.test.sh
       - name: OS upgrader (level 2), on real OpenWrt userland
         run: sh feed/dn-os-upgrade/test/upgrade.test.sh
+      - name: Package upgrader (level 1, dn-* packages), on real OpenWrt userland
+        run: sh feed/dn-os-upgrade/test/pkg-upgrade.test.sh
+      - name: Every changed package bumps its version (else routers never receive it)
+        if: github.event_name == 'pull_request'
+        run: sh scripts/check-feed-versions.sh "origin/${{ github.base_ref }}"
 
   hub-lite:
     needs: tests
@@ -65,6 +75,11 @@ jobs:
           d=$(mktemp -d); signify-openbsd -G -n -p "$d/t.pub" -s "$d/t.sec"
           DN_OS_VERIFY_PUB="$d/t.pub" sh scripts/release-manifest.sh hub-lite-os-v0.0.0-dryrun "$d/t.sec"
           rm -f out/hub-lite/manifest.json out/hub-lite/manifest.json.sig
+      - name: dn_os feed index (dry run, throwaway key)
+        run: |
+          set -eu
+          d=$(mktemp -d); signify-openbsd -G -n -p "$d/t.pub" -s "$d/t.sec"
+          sh scripts/publish-feed.sh "$d/t.sec" "$d/t.pub"
       - uses: actions/upload-artifact@v4
         with:
           name: dockneighbor-os-hub-lite-${{ github.sha }}

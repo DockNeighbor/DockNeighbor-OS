@@ -45,8 +45,15 @@ uplink with no second step.
 
 | Level | Replaces | From | Keeps |
 |---|---|---|---|
-| **1: hub-lite** | the `brvg-hub-lite` package | DockNeighbor-Hub's signed opkg feed (key `b0ff2bec314c57d3`); the image sets the feed up on first boot and opkg refuses unsigned indexes | everything |
+| **1: hub-lite** | the `brvg-hub-lite` package | DockNeighbor-Hub's signed opkg feed (key `b0ff2bec314c57d3`), via the hub-lite's own `self_update` | everything |
+| **1: dn-\* packages** | DockNeighbor OS's own packages (`dn-handoff`, `dn-os-upgrade`, `dn-hub-lite-os`) | this repo's signed `dn_os` feed (key `1c44072d07e3e228`), via `dn-pkg-upgrade` | everything |
 | **2: OS** | the whole firmware | `dn-os-upgrade`: this repo's signed release channel (key `3420e953f030f5a8`) | settings, the hub-lite's config and member keys |
+
+The image is a known-good baseline for the kernel, drivers and base OS. Every package defined in `feed/` is also
+published to the `dn_os` feed (rolling release `feed`, on each merge to `main` that touches `feed/`), so a fix to
+one reaches routers without a new firmware. `dn-pkg-upgrade` upgrades only packages that feed carries, and
+restarts only the services they own. A PR that changes a package without bumping its version fails CI, because
+opkg would never deliver it. opkg refuses any index that fails its signature.
 
 `dn-os-upgrade check` reports `{current, available, upgrade, hubLite}`, and `dn-os-upgrade apply [--detach]` upgrades.
 A router takes an OS release only when the manifest is signed by a key baked into its image, names its board
