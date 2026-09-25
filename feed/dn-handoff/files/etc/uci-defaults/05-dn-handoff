@@ -1,0 +1,4 @@
+#!/bin/sh
+# First boot after a flash: apply the site file the handoff tarball restored, if there is one.
+# A non-zero exit keeps this script, so a failed apply is retried on the next boot.
+/usr/libexec/dn-handoff/apply

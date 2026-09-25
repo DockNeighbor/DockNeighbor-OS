@@ -1,0 +1,131 @@
+#!/bin/sh
+# dn-handoff: turn the brand-neutral /etc/dn/site.json (handoff/README.md) into this firmware's config, so a
+# router flashed from its vendor firmware comes back on the same LAN address, access point and uplink, with
+# the same admin password. Runs from uci-defaults at first boot, before the network starts.
+# Exit 0 = applied (or nothing to apply); non-zero = keep the uci-defaults script and retry next boot.
+SITE=/etc/dn/site.json
+RESULT=/etc/dn/handoff.result
+
+note() {
+	# logd is not running yet at uci-defaults time, so the kernel log carries it into logread, and the
+	# result file keeps the outcome for the agent and for support. Never secrets.
+	echo "dn-handoff: $*" > /dev/kmsg 2>/dev/null
+	echo "$*" > "$RESULT"
+}
+
+# A failure must leave nothing staged: a later uci-defaults script's `uci commit` would otherwise commit
+# half of this site. The site file stays, so the next boot retries from a clean start.
+fail() {
+	for c in network wireless dhcp firewall; do uci -q revert "$c"; done
+	[ -f /tmp/dn-handoff.shadow ] && cp /tmp/dn-handoff.shadow /etc/shadow
+	note "failed: $*"
+	exit 1
+}
+
+# Every uci write is checked: a write that fails must never be reported as applied. The message names the
+# option but never its value (values include Wi-Fi keys).
+u() { uci "$@" || fail "uci $1 ${2%%=*}"; }
+# jshn prints "WARNING: Variable ... does not exist" on STDOUT for an absent optional object.
+has() { json_select "$1" >/dev/null 2>&1; }
+
+[ -f "$SITE" ] || exit 0
+. /usr/share/libubox/jshn.sh
+json_load_file "$SITE" || fail "site file is not JSON"
+json_get_var v v
+[ "$v" = 1 ] || fail "unknown site version '$v'"
+
+json_get_var country country
+lan_ip=""
+if has lan; then
+	json_get_vars ip mask
+	lan_ip=$ip
+	[ -n "$ip" ] && u set network.lan.ipaddr="$ip"
+	[ -n "$mask" ] && u set network.lan.netmask="$mask"
+	json_select ..
+fi
+
+# Wi-Fi, only when the site has any: create the radio sections if the first-boot detect has not run yet.
+radio=""
+use_radio() {
+	[ -n "$radio" ] && return 0
+	uci -q show wireless | grep -q '=wifi-device$' || wifi config
+	radio=$(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p' | head -1)
+	[ -n "$radio" ] || fail "no radio"
+	u set wireless.$radio.disabled=0
+	u set wireless.$radio.channel=auto
+	[ -n "$country" ] && u set wireless.$radio.country="$country"
+}
+
+ap=""
+if has ap; then
+	use_radio
+	json_get_vars ssid enc key
+	ap=$ssid
+	uci -q delete wireless.dn_ap
+	u set wireless.dn_ap=wifi-iface
+	u set wireless.dn_ap.device=$radio
+	u set wireless.dn_ap.mode=ap
+	u set wireless.dn_ap.network=lan
+	u set wireless.dn_ap.ssid="$ssid"
+	u set wireless.dn_ap.encryption="${enc:-psk2}"
+	u set wireless.dn_ap.key="$key"
+	json_select ..
+	# OpenWrt's default access point (named OpenWrt, open) is replaced, not left alongside.
+	uci -q delete wireless.default_$radio
+fi
+
+uplink=""
+if has uplink; then
+	json_get_vars type ssid enc key
+	if [ "$type" = wifi ]; then
+		use_radio
+		uplink=$ssid
+		uci -q delete wireless.dn_uplink
+		u set wireless.dn_uplink=wifi-iface
+		u set wireless.dn_uplink.device=$radio
+		u set wireless.dn_uplink.mode=sta
+		u set wireless.dn_uplink.network=wwan
+		u set wireless.dn_uplink.ssid="$ssid"
+		u set wireless.dn_uplink.encryption="${enc:-psk2}"
+		u set wireless.dn_uplink.key="$key"
+		u set network.wwan=interface
+		u set network.wwan.proto=dhcp
+		u set network.wwan.metric=20
+		z=$(uci -q show firewall | sed -n "s/^firewall\.\(@zone\[[0-9]*\]\)\.name='wan'$/\1/p")
+		[ -n "$z" ] || fail "no wan firewall zone"
+		uci -q del_list firewall.$z.network=wwan
+		u add_list firewall.$z.network=wwan
+	fi
+	json_select ..
+fi
+
+n=0
+if has reservations; then
+	i=1
+	while has $i; do
+		json_get_vars name mac ip
+		s=$(uci add dhcp host) && [ -n "$s" ] || fail "uci add dhcp host"
+		u set dhcp.$s.name="$name"
+		u set dhcp.$s.mac="$mac"
+		u set dhcp.$s.ip="$ip"
+		json_select ..
+		i=$((i + 1)); n=$((n + 1))
+	done
+	json_select ..
+fi
+
+json_get_var rootHash rootHash
+if [ -n "$rootHash" ]; then
+	case "$rootHash" in
+		*[!A-Za-z0-9./\$]*) fail "admin password hash has unexpected characters" ;;
+	esac
+	# The | delimiter: a crypt hash contains / and $ but never | (checked just above).
+	cp /etc/shadow /tmp/dn-handoff.shadow || fail "can't back up /etc/shadow"
+	sed -i "s|^root:[^:]*:|root:$rootHash:|" /etc/shadow
+	[ "$(sed -n 's/^root:\([^:]*\):.*/\1/p' /etc/shadow)" = "$rootHash" ] || fail "admin password not written"
+fi
+
+uci commit || fail "uci commit"
+rm -f "$SITE" /tmp/dn-handoff.shadow
+note "applied v1 lan=${lan_ip:-default} ap=${ap:-none} uplink=${uplink:-none} reservations=$n password=$([ -n "$rootHash" ] && echo carried || echo unchanged)"
+exit 0

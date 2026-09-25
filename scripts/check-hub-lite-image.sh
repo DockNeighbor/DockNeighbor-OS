@@ -1,0 +1,53 @@
+#!/bin/sh
+# Prove the finished hub-lite image has every guarantee the profile promises, by opening the image itself
+# (not the build's config). Fails on the first missing one.
+#   usage: scripts/check-hub-lite-image.sh <sysupgrade.bin>
+# Run against plain upstream OpenWrt for the same board, it must FAIL — that's how we know it can.
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+. "$root/profiles/hub-lite/profile.env"
+img=$1
+[ -f "$img" ] || { echo "check: no image $img" >&2; exit 1; }
+fails=0
+ok() { echo "  ok    $*"; }
+bad() { echo "  FAIL  $*"; fails=$((fails + 1)); }
+
+echo "check-hub-lite-image: $(basename "$img")"
+
+# The vendor's sysupgrade accepts only an image whose metadata names its board.
+meta=$(strings -n 16 "$img" | grep '"supported_devices"' | tail -1)
+case "$meta" in *"\"$BOARD\""*) ok "metadata lists $BOARD" ;; *) bad "metadata does not list $BOARD" ;; esac
+
+# Firmware partition of the board: 0xf90000 (/proc/mtd on the device, 2026-09-24).
+size=$(wc -c < "$img"); max=$((0xf90000))
+[ "$size" -le "$max" ] && ok "size $size <= $max" || bad "size $size > firmware partition $max"
+
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+# The rootfs follows the kernel; "hsqs" could also occur by chance in compressed data, so try each hit.
+r=""
+for off in $(grep -obUa hsqs "$img" | cut -d: -f1); do
+  rm -rf "$tmp/r"
+  # Unprivileged, unsquashfs can't create the image's device nodes and exits 2. Accept that, and ONLY that.
+  rc=0; unsquashfs -q -n -o "$off" -d "$tmp/r" "$img" >"$tmp/u.log" 2>&1 || rc=$?
+  if [ "$rc" -eq 2 ] && ! grep -v -e "could not create character device" -e "could not create block device" "$tmp/u.log" | grep -q .; then rc=0; fi
+  if [ "$rc" -eq 0 ] && [ -d "$tmp/r/etc" ]; then r="$tmp/r"; break; fi
+done
+[ -n "$r" ] || { bad "no squashfs rootfs found"; echo "check: $fails failure(s)"; exit 1; }
+
+grep -q 'ssh-ed25519' "$r/usr/sbin/dropbear" 2>/dev/null && ok "dropbear speaks ssh-ed25519" || bad "dropbear has no ssh-ed25519 (upstream small_flash build)"
+[ -x "$r/usr/bin/brvg-hub-lite" ] && ok "hub-lite installed" || bad "hub-lite missing"
+ls "$r"/etc/rc.d/S*brvg-hub-lite >/dev/null 2>&1 && ok "hub-lite enabled at boot" || bad "hub-lite not enabled"
+[ -x "$r/www/brvg/api/hub" ] && ok "hub-lite /api/hub door present" || bad "hub-lite door missing"
+[ -x "$r/usr/libexec/dn-handoff/apply" ] && [ -x "$r/etc/uci-defaults/05-dn-handoff" ] && ok "dn-handoff renderer present" || bad "dn-handoff missing"
+[ -x "$r/etc/uci-defaults/95-dn-hub-lite" ] && ok "hub-lite feed setup at first boot" || bad "95-dn-hub-lite missing"
+grep -q '^DN_OS_PROFILE=hub-lite$' "$r/etc/dn-release" 2>/dev/null && ok "dn-release: $(grep DN_OS_VERSION "$r/etc/dn-release")" || bad "no /etc/dn-release"
+# No local web page: the apps are the interface.
+[ ! -d "$r/www/luci-static" ] && ok "no LuCI" || bad "LuCI is in the image"
+ls "$r"/etc/rc.d/S*uhttpd >/dev/null 2>&1 && bad "system uhttpd enabled" || ok "system uhttpd disabled"
+[ -x "$r/usr/sbin/uhttpd" ] && ok "uhttpd binary present (hub-lite's own instance)" || bad "uhttpd binary missing"
+# Trust: the only opkg key baked in is OpenWrt's 24.10 release key (the hub-lite key arrives via feed-setup).
+keys=$(ls "$r/etc/opkg/keys" 2>/dev/null | tr '\n' ' ')
+[ "$keys" = "d310c6f2833e97f7 " ] && ok "opkg keys: $keys" || bad "unexpected opkg keys: '${keys}' (a local build key?)"
+
+[ "$fails" -eq 0 ] || { echo "check: $fails failure(s)"; exit 1; }
+echo "check: all guarantees hold"

@@ -1,0 +1,2 @@
+build-essential libncurses-dev zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip file
+python3 python3-setuptools curl zstd squashfs-tools signify-openbsd

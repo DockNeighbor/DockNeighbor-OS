@@ -1,0 +1,6 @@
+#!/bin/sh
+# Point opkg at the hub-lite's signed feed so its self-update works. The Hub's own feed-setup does it, so the
+# Hub stays the one source of that feed's URL and key. (The package's postinst would do this on a live
+# install, but ImageBuilder runs postinst scripts on the build host, where it is a no-op.)
+[ -x /usr/libexec/brvg-hub-lite/feed-setup ] || exit 0
+/usr/libexec/brvg-hub-lite/feed-setup >/dev/null

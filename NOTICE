@@ -1,0 +1,12 @@
+DockNeighbor OS — firmware for DockNeighbor devices
+Copyright SC4 Technologies LLC
+
+The code in this repository is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The images this repository builds contain OpenWrt (https://openwrt.org), which is mostly
+GPL-2.0-licensed, and third-party packages under their own licences. The source of every
+upstream component is at the pinned OpenWrt release named in profiles/*/upstream.env.
+
+"DockNeighbor" and its branding are trademarks of SC4 Technologies LLC and are not licensed
+by the Apache License. The DockNeighbor cloud service these devices report to is a separate,
+proprietary product of SC4 Technologies LLC.

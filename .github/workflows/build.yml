@@ -1,0 +1,61 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+# A PUBLIC repo: GitHub-hosted runners only, never self-hosted (a fork PR could run code on it), and no secrets.
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: |
+          set -eu
+          for f in handoff/read-glinet.sh feed/dn-handoff/files/usr/libexec/dn-handoff/apply \
+                   feed/dn-handoff/files/etc/uci-defaults/05-dn-handoff profiles/hub-lite/files/etc/uci-defaults/95-dn-hub-lite \
+                   scripts/build-hub-lite.sh scripts/check-hub-lite-image.sh; do
+            sh -n "$f"
+          done
+      - name: Handoff renderer, on real OpenWrt userland
+        run: sh handoff/test/apply.test.sh
+
+  hub-lite:
+    needs: tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tools
+        run: sudo apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends $(cat profiles/hub-lite/build-deps)
+      # Only the pinned, hash-checked upstream downloads are cached; the build re-verifies them on every run.
+      - uses: actions/cache@v4
+        with:
+          path: build/hub-lite/dl
+          key: hub-lite-dl-${{ hashFiles('profiles/hub-lite/upstream.env') }}
+      - name: Build the hub-lite image
+        run: sh scripts/build-hub-lite.sh
+      - name: The image check can fail (plain upstream OpenWrt must not pass it)
+        run: |
+          set -eu
+          . profiles/hub-lite/upstream.env
+          f=build/hub-lite/dl/$UPSTREAM_IMAGE_FILE
+          [ -f "$f" ] || curl -fsSL -o "$f" "$OPENWRT_BASE/$UPSTREAM_IMAGE_FILE"
+          echo "$UPSTREAM_IMAGE_SHA256  $f" | sha256sum -c --status
+          if sh scripts/check-hub-lite-image.sh "$f"; then echo "::error::the image check passed plain upstream OpenWrt"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dockneighbor-os-hub-lite-${{ github.sha }}
+          path: out/hub-lite/
+          if-no-files-found: error
