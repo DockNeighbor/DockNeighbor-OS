@@ -33,18 +33,24 @@ fetch() {
 fetch "$OPENWRT_BASE/$SDK_FILE" "$SDK_FILE" "$SDK_SHA256"
 fetch "$OPENWRT_BASE/$IB_FILE" "$IB_FILE" "$IB_SHA256"
 
-# The hub-lite: the signed index first, then this exact version's hash from it.
+# The hub-lite, pinned by version and sha256 (upstream.env). The signed index is still read: it must verify, and
+# while it lists the pinned version its hash must match the pin. When the Hub has moved on, say so.
 curl -fsSL --retry 3 -o "$work/hl.Packages" "$HUB_LITE_FEED/Packages"
 curl -fsSL --retry 3 -o "$work/hl.Packages.sig" "$HUB_LITE_FEED/Packages.sig"
 signify-openbsd -V -q -p "$prof/keys/$HUB_LITE_FEED_KEY" -x "$work/hl.Packages.sig" -m "$work/hl.Packages" ||
   { echo "build: the hub-lite feed index is not signed by $HUB_LITE_FEED_KEY" >&2; exit 1; }
-hl_sha=$(awk -v v="$HUB_LITE_VERSION" '
+idx_sha=$(awk -v v="$HUB_LITE_VERSION" '
   /^Package: /{p=$2} /^Version: /{ver=$2} /^SHA256sum: /{s=$2}
   /^$/{ if (p=="brvg-hub-lite" && ver==v) print s; p=ver=s="" }
   END{ if (p=="brvg-hub-lite" && ver==v) print s }' "$work/hl.Packages")
-[ -n "$hl_sha" ] || { echo "build: brvg-hub-lite $HUB_LITE_VERSION is not in the signed feed" >&2; exit 1; }
+if [ -n "$idx_sha" ]; then
+  [ "$idx_sha" = "$HUB_LITE_SHA256" ] ||
+    { echo "build: the signed feed says brvg-hub-lite $HUB_LITE_VERSION is $idx_sha, the pin says $HUB_LITE_SHA256" >&2; exit 1; }
+else
+  echo "::notice::the Hub's hub-lite feed has moved to $(awk '/^Version: /{print $2}' "$work/hl.Packages" | tail -1); this image pins $HUB_LITE_VERSION (profiles/hub-lite/upstream.env)"
+fi
 hl_ipk="brvg-hub-lite_${HUB_LITE_VERSION}_all.ipk"
-fetch "$HUB_LITE_FEED/$hl_ipk" "$hl_ipk" "$hl_sha"
+fetch "$HUB_LITE_FEED/$hl_ipk" "$hl_ipk" "$HUB_LITE_SHA256"
 
 # --- SDK: dropbear with Ed25519, and every package defined in feed/ -----------------------------------
 # Our packages are exactly the ones whose Makefile is in this checkout's feed/, never whatever a reused SDK has

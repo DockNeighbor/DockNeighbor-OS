@@ -69,7 +69,11 @@ eq "uplink ssid" "$(uci get wireless.dn_uplink.ssid)" Marina
 eq "uplink mode" "$(uci get wireless.dn_uplink.mode)" sta
 eq "uplink enc" "$(uci get wireless.dn_uplink.encryption)" psk-mixed
 eq "wwan proto" "$(uci get network.wwan.proto)" dhcp
-z=$(wan_zone); eq "wwan in the wan zone once" "$(uci get firewall.$z.network | tr ' ' '\n' | grep -c '^wwan$')" 1
+z=$(wan_zone); eq "wwan NOT in the wan zone (it drops input)" "$(uci get firewall.$z.network | tr ' ' '\n' | grep -c '^wwan$')" 0
+eq "wwan in the uplink zone once" "$(uci get firewall.dn_uplink.network | tr ' ' '\n' | grep -c '^wwan$')" 1
+eq "uplink zone accepts input like LAN (the boat network reaches 8722/8181/22)" "$(uci get firewall.dn_uplink.input)" ACCEPT
+eq "uplink zone still NATs the router's own AP clients" "$(uci get firewall.dn_uplink.masq)" 1
+eq "lan forwards to the uplink" "$(uci get firewall.dn_uplink_fwd.src)->$(uci get firewall.dn_uplink_fwd.dest)" "lan->uplink"
 eq "reservations" "$(uci show dhcp | grep -c '=host$')" 2
 eq "reservation ip" "$(uci show dhcp | grep -F "ip='192.168.8.22'" | wc -l | tr -d ' ')" 1
 eq "root hash" "$(sed -n 's/^root:\([^:]*\):.*/\1/p' /etc/shadow)" "$HASH"
@@ -120,13 +124,15 @@ sh "$APPLY"; eq "exit status" "$?" 1
 eq "site file kept for retry" "$([ -f "$SITE" ] && echo present || echo removed)" present
 grep -q '^failed: uci set network.lan.ipaddr$' /etc/dn/handoff.result && pass "result: $(cat /etc/dn/handoff.result)" || bad "result: $(cat /etc/dn/handoff.result)"
 
-echo "case 6: a retry after success does not duplicate the uplink zone entry"
+echo "case 6: a retry after success does not duplicate the uplink zone or its entry"
 reset
 echo '{ "v": 1, "uplink": { "type": "wifi", "ssid": "M", "key": "k1234567" } }' > "$SITE"
 sh "$APPLY" >/dev/null
 echo '{ "v": 1, "uplink": { "type": "wifi", "ssid": "M", "key": "k1234567" } }' > "$SITE"
 sh "$APPLY"; eq "exit status" "$?" 0
-z=$(wan_zone); eq "wwan in the wan zone once" "$(uci get firewall.$z.network | tr ' ' '\n' | grep -c '^wwan$')" 1
+eq "wwan in the uplink zone once" "$(uci get firewall.dn_uplink.network | tr ' ' '\n' | grep -c '^wwan$')" 1
+eq "one uplink zone" "$(uci show firewall | grep -c "name='uplink'")" 1
+eq "one lan->uplink forwarding" "$(uci show firewall | grep -c "dest='uplink'")" 1
 
 [ "$fails" -eq 0 ] || { echo "apply.test: $fails failure(s)"; exit 1; }
 echo "apply.test: all cases pass"
