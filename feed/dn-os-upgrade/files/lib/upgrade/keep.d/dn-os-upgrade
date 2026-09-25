@@ -1,0 +1,3 @@
+# State only. /etc/dn/os-keys is NOT kept: the keys belong to the image, so a retired key really goes.
+/etc/dn/hub-lite.min
+/etc/dn/handoff.result

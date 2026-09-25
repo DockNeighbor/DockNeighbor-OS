@@ -1,0 +1,18 @@
+#!/bin/sh
+# After a full-OS upgrade (level 2), put the hub-lite back to at least the version that ran before it:
+# the new image carries its own hub-lite, which can be older than one level 1 installed from the feed.
+# dn-os-upgrade wrote that version to /etc/dn/hub-lite.min (kept across the upgrade).
+# Exit 0 = nothing to do or done; non-zero = procd retries later (the uplink may not be up yet).
+MIN=/etc/dn/hub-lite.min
+[ -s "$MIN" ] || exit 0
+want=$(cat "$MIN")
+have() { opkg status brvg-hub-lite 2>/dev/null | sed -n 's/^Version: //p'; }
+if [ -n "$(have)" ] && opkg compare-versions "$(have)" '>=' "$want"; then rm -f "$MIN"; exit 0; fi
+opkg update >/dev/null 2>&1 || { logger -t dn-hub-lite "restore: feed unreachable, retrying"; exit 1; }
+opkg upgrade brvg-hub-lite >/dev/null 2>&1 || opkg install brvg-hub-lite >/dev/null 2>&1
+if [ -n "$(have)" ] && opkg compare-versions "$(have)" '>=' "$want"; then
+	logger -t dn-hub-lite "restore: hub-lite $(have) (was $want before the OS upgrade)"
+	rm -f "$MIN"; exit 0
+fi
+logger -t dn-hub-lite "restore: hub-lite is $(have), want $want; retrying"
+exit 1

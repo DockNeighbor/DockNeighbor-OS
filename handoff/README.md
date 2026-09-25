@@ -51,4 +51,5 @@ Every field is optional except `v`. An unknown `v` fails the apply and is retrie
 newer reader can't half-configure an older firmware.
 
 The tarball also carries `/etc/dropbear/authorized_keys` and the dropbear Ed25519 host key, so key access
-and the router's SSH identity survive.
+and the router's SSH identity survive, and, on a router already running the hub-lite, its
+`/etc/brvg-hub-lite.conf` and `.keys`, so its enrollment survives too.

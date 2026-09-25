@@ -56,7 +56,7 @@ cd "$sdk"
 if [ -d feeds/base/.git ]; then ./scripts/feeds update -i base >/dev/null; else ./scripts/feeds update base >/dev/null; fi
 [ "$(git -C feeds/base rev-parse HEAD)" = "$OPENWRT_COMMIT" ] || { echo "build: feeds/base is not at $OPENWRT_COMMIT" >&2; exit 1; }
 ./scripts/feeds update dn >/dev/null
-./scripts/feeds install dropbear dn-handoff >/dev/null
+./scripts/feeds install dropbear dn-handoff dn-os-upgrade >/dev/null
 # The ImageBuilder must pick OUR dropbear over the identical-version upstream one in its package feed, so ours
 # carries a higher release. Reset first: a reused SDK already has the bump.
 mk=feeds/base/package/network/services/dropbear/Makefile
@@ -68,31 +68,35 @@ cat > .config <<EOF
 CONFIG_PACKAGE_dropbear=m
 CONFIG_DROPBEAR_ED25519=y
 CONFIG_PACKAGE_dn-handoff=m
+CONFIG_PACKAGE_dn-os-upgrade=m
 EOF
 make defconfig >/dev/null
 # dropbear is a target default, so the SDK selects it =y; either way it is built as a package here.
-for sym in 'CONFIG_DROPBEAR_ED25519=y' 'CONFIG_PACKAGE_dropbear=[ym]' 'CONFIG_PACKAGE_dn-handoff=[ym]'; do
+for sym in 'CONFIG_DROPBEAR_ED25519=y' 'CONFIG_PACKAGE_dropbear=[ym]' 'CONFIG_PACKAGE_dn-handoff=[ym]' 'CONFIG_PACKAGE_dn-os-upgrade=[ym]'; do
   grep -q "^$sym\$" .config || { echo "build: $sym did not survive defconfig" >&2; exit 1; }
 done
 rm -rf bin
-make -j"$jobs" package/dropbear/compile package/dn-handoff/compile || make -j1 V=s package/dropbear/compile package/dn-handoff/compile
+pkgs="package/dropbear/compile package/dn-handoff/compile package/dn-os-upgrade/compile"
+make -j"$jobs" $pkgs || make -j1 V=s $pkgs
 # dropbear, a target default package, lands under bin/targets/; feed packages under bin/packages/.
 db_ipk=$(find bin -name "dropbear_*-r$((rel + 100))_*.ipk" | head -1)
 dh_ipk=$(find bin -name 'dn-handoff_*_all.ipk' | head -1)
-[ -n "$db_ipk" ] && [ -n "$dh_ipk" ] || { echo "build: the SDK produced no dropbear/dn-handoff package" >&2; exit 1; }
+du_ipk=$(find bin -name 'dn-os-upgrade_*_all.ipk' | head -1)
+[ -n "$db_ipk" ] && [ -n "$dh_ipk" ] && [ -n "$du_ipk" ] || { echo "build: the SDK produced no dropbear/dn-handoff/dn-os-upgrade package" >&2; exit 1; }
 
 # --- ImageBuilder ---------------------------------------------------------------------------------------
 ib="$work/${IB_FILE%.tar.zst}"
 [ -d "$ib" ] || tar -I zstd -xf "$dl/$IB_FILE" -C "$work"
 cd "$ib"
 rm -rf packages/*.ipk bin files
-cp "$sdk/$db_ipk" "$sdk/$dh_ipk" "$dl/$hl_ipk" packages/
+cp "$sdk/$db_ipk" "$sdk/$dh_ipk" "$sdk/$du_ipk" "$dl/$hl_ipk" packages/
 cp -R "$prof/files" files
 cat > files/etc/dn-release <<EOF
 DN_OS_PROFILE=hub-lite
 DN_OS_VERSION=$DN_OS_VERSION
 DN_OS_UPSTREAM="OpenWrt $OPENWRT_VERSION $OPENWRT_TARGET"
 DN_OS_HUB_LITE=$HUB_LITE_VERSION
+DN_OS_CHANNEL_URL=$DN_OS_CHANNEL_URL
 EOF
 make image PROFILE="$DEVICE" PACKAGES="$PACKAGES" FILES="$ib/files" DISABLED_SERVICES="$DISABLED_SERVICES" \
   EXTRA_IMAGE_NAME="dn-hub-lite-$DN_OS_VERSION"

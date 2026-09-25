@@ -1,0 +1,61 @@
+name: Release
+
+# A hub-lite OS release: push a tag `hub-lite-os-v<DN_OS_VERSION>`. Builds the image, signs a manifest with the
+# DockNeighbor OS release key (fp 3420e953f030f5a8), publishes a versioned release, then points the rolling
+# `channel-hub-lite` release at it; that channel manifest is what routers' dn-os-upgrade reads (level 2).
+# Only a maintainer can push a tag, and fork PRs never see secrets.
+on:
+  push:
+    tags: ['hub-lite-os-v*']
+
+concurrency:
+  group: release-hub-lite
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag names the profile's version
+        run: |
+          set -eu
+          . profiles/hub-lite/profile.env
+          [ "$GITHUB_REF_NAME" = "hub-lite-os-v$DN_OS_VERSION" ] || { echo "::error::tag $GITHUB_REF_NAME != hub-lite-os-v$DN_OS_VERSION (profiles/hub-lite/profile.env)"; exit 1; }
+      - name: Build tools
+        run: sudo apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends $(cat profiles/hub-lite/build-deps)
+      - uses: actions/cache@v4
+        with:
+          path: build/hub-lite/dl
+          key: hub-lite-dl-${{ hashFiles('profiles/hub-lite/upstream.env') }}
+      - name: Build the hub-lite image
+        run: sh scripts/build-hub-lite.sh
+      - name: Sign the manifest
+        env:
+          DN_OS_RELEASE_USIGN_KEY: ${{ secrets.DN_OS_RELEASE_USIGN_KEY }}
+        run: |
+          set -eu
+          [ -n "$DN_OS_RELEASE_USIGN_KEY" ] || { echo "::error::DN_OS_RELEASE_USIGN_KEY is not set"; exit 1; }
+          umask 077; k=$(mktemp); trap 'rm -f "$k"' EXIT
+          printf '%s\n' "$DN_OS_RELEASE_USIGN_KEY" > "$k"
+          sh scripts/release-manifest.sh "$GITHUB_REF_NAME" "$k"
+      - name: Publish the release, then move the channel to it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          . profiles/hub-lite/profile.env
+          cd out/hub-lite
+          gh release create "$GITHUB_REF_NAME" --title "DockNeighbor OS hub-lite $DN_OS_VERSION" \
+            --notes "GL.iNet GL-MT300N-V2. Verify: \`signify -V -p dn-os-release.pub -m manifest.json\` then the image's sha256 in it." \
+            ./*.bin SHA256SUMS manifest.json manifest.json.sig
+          gh release view channel-hub-lite >/dev/null 2>&1 || gh release create channel-hub-lite --latest=false \
+            --title "hub-lite channel (rolling)" --notes "The signed manifest routers read for full-OS upgrades. Overwritten by each release."
+          # The signature last: a router that reads the new manifest before its signature fails closed and retries.
+          cp manifest.json glinet_gl-mt300n-v2.json; cp manifest.json.sig glinet_gl-mt300n-v2.json.sig
+          gh release upload channel-hub-lite glinet_gl-mt300n-v2.json --clobber
+          gh release upload channel-hub-lite glinet_gl-mt300n-v2.json.sig --clobber

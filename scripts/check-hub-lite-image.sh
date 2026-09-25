@@ -41,6 +41,18 @@ ls "$r"/etc/rc.d/S*brvg-hub-lite >/dev/null 2>&1 && ok "hub-lite enabled at boot
 [ -x "$r/usr/libexec/dn-handoff/apply" ] && [ -x "$r/etc/uci-defaults/05-dn-handoff" ] && ok "dn-handoff renderer present" || bad "dn-handoff missing"
 [ -x "$r/etc/uci-defaults/95-dn-hub-lite" ] && ok "hub-lite feed setup at first boot" || bad "95-dn-hub-lite missing"
 grep -q '^DN_OS_PROFILE=hub-lite$' "$r/etc/dn-release" 2>/dev/null && ok "dn-release: $(grep DN_OS_VERSION "$r/etc/dn-release")" || bad "no /etc/dn-release"
+# Level 1 (the hub-lite package from its feed) is only safe if opkg refuses unsigned indexes.
+grep -q '^option check_signature' "$r/etc/opkg.conf" 2>/dev/null && ok "opkg checks feed signatures (level 1)" || bad "opkg does not check signatures"
+# Level 2 (the whole OS): the upgrader, the release key, the channel, and what must survive it.
+[ -x "$r/usr/sbin/dn-os-upgrade" ] && ok "dn-os-upgrade present (level 2)" || bad "dn-os-upgrade missing"
+[ -f "$r/etc/dn/os-keys/3420e953f030f5a8" ] && ok "OS release key 3420e953f030f5a8" || bad "OS release key missing"
+grep -q '^DN_OS_CHANNEL_URL=https://' "$r/etc/dn-release" 2>/dev/null && ok "OS channel set" || bad "no DN_OS_CHANNEL_URL"
+kept=$(sed '/^#/d' "$r"/lib/upgrade/keep.d/* 2>/dev/null)
+for f in /etc/brvg-hub-lite.conf /etc/brvg-hub-lite.keys /etc/dn/hub-lite.min; do
+  echo "$kept" | grep -qxF "$f" && ok "kept across OS upgrades: $f" || bad "not kept across OS upgrades: $f"
+done
+echo "$kept" | grep -q '^/etc/dn/*$\|os-keys' && bad "OS keys would be kept across upgrades" || ok "OS keys owned by the image"
+ls "$r"/etc/rc.d/S*dn-hub-lite-restore >/dev/null 2>&1 && ok "hub-lite restore after OS upgrade enabled" || bad "hub-lite restore not enabled"
 # No local web page: the apps are the interface.
 [ ! -d "$r/www/luci-static" ] && ok "no LuCI" || bad "LuCI is in the image"
 ls "$r"/etc/rc.d/S*uhttpd >/dev/null 2>&1 && bad "system uhttpd enabled" || ok "system uhttpd disabled"

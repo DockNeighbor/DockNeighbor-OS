@@ -41,6 +41,26 @@ The image is upstream OpenWrt 24.10.8 for the board, plus:
 Proven on a GL-MT300N-V2 on 2026-09-24: stock GL.iNet 4.3.28 → upstream OpenWrt 24.10.8, back on its
 uplink with no second step.
 
+## Upgrades: two levels
+
+| Level | Replaces | From | Keeps |
+|---|---|---|---|
+| **1: hub-lite** | the `brvg-hub-lite` package | DockNeighbor-Hub's signed opkg feed (key `b0ff2bec314c57d3`); the image sets the feed up on first boot and opkg refuses unsigned indexes | everything |
+| **2: OS** | the whole firmware | `dn-os-upgrade`: this repo's signed release channel (key `3420e953f030f5a8`) | settings, the hub-lite's config and member keys |
+
+`dn-os-upgrade check` reports `{current, available, upgrade, hubLite}`, and `dn-os-upgrade apply [--detach]` upgrades.
+A router takes an OS release only when the manifest is signed by a key baked into its image, names its board
+and profile, and is **strictly newer** than what it runs, so a replayed older manifest can't downgrade it. The
+image must then match the manifest's sha256 and pass `sysupgrade -T`.
+
+A new image carries its own hub-lite, which may be older than one level 1 installed. So before a level-2
+upgrade the router records its hub-lite version (`/etc/dn/hub-lite.min`), and afterwards
+`dn-hub-lite-restore` reinstalls from the feed until it is back at that version or newer.
+
+**Releasing:** bump `DN_OS_VERSION` in `profiles/hub-lite/profile.env`, then push the tag
+`hub-lite-os-v<version>`. The release workflow builds, signs `manifest.json`, publishes the release, and
+then moves the rolling `channel-hub-lite` release to it.
+
 ## Building
 
 hub-lite needs x86-64 Linux with the OpenWrt ImageBuilder prerequisites (see the CI workflow):

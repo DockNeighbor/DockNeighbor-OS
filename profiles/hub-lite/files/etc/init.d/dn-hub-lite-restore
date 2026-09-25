@@ -1,0 +1,12 @@
+#!/bin/sh /etc/rc.common
+# Retry /usr/libexec/dn-hub-lite/restore every 5 minutes until it succeeds (it exits 0 at once when there is
+# nothing to restore, which is every boot except the first after a full-OS upgrade).
+START=99
+USE_PROCD=1
+
+start_service() {
+	[ -s /etc/dn/hub-lite.min ] || return 0
+	procd_open_instance
+	procd_set_param command /bin/sh -c 'until /usr/libexec/dn-hub-lite/restore; do sleep 300; done'
+	procd_close_instance
+}
