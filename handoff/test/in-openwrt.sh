@@ -8,7 +8,9 @@ pass() { echo "  ok    $*"; }
 bad() { echo "  FAIL  $*"; fails=$((fails + 1)); }
 eq() { [ "$2" = "$3" ] && pass "$1" || bad "$1: expected '$3', got '$2'"; }
 
-mkdir -p /etc/dn /tmp/pristine
+mkdir -p /etc/dn /tmp/pristine /usr/lib/dn-net
+# dn-handoff sources dn-net's uplink.sh (the one role -> firewall rule).
+cp /t/feed/dn-net/files/usr/lib/dn-net/uplink.sh /usr/lib/dn-net/
 cp -a /etc/config /tmp/pristine/config; cp /etc/shadow /tmp/pristine/shadow
 reset() {
 	rm -rf /etc/config /tmp/.uci; cp -a /tmp/pristine/config /etc/config; cp /tmp/pristine/shadow /etc/shadow

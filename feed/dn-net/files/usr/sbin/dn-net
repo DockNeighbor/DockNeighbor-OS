@@ -1,0 +1,450 @@
+#!/bin/sh
+# dn-net: DockNeighbor OS's network settings as JSON, for the hub-lite's /api/hub/net/* door (the DN device API).
+# The shapes are the app's NetworkDeviceDriver types (dashboard/src/utils/networkDevices.ts), so the app's router
+# panel drives a DockNeighbor OS router exactly as it drives a GL.iNet one.
+#
+#   dn-net <verb>            input JSON (if any) on stdin, result JSON on stdout
+#   exit 0 ok | 2 bad request (reason on stderr) | 1 failed
+#
+# Verbs: wan, lan-get, lan-set, wifi-get, wifi-set, uplink-scan, uplink-get, uplink-join, uplink-disconnect,
+# uplink-saved, uplink-forget, clients, client-block, reservations, reservation-add, reservation-remove, reboot.
+#
+# A change that would cut the caller off (a LAN move, a Wi-Fi reload, a reboot) is applied AFTER the answer, in
+# the background. DN_NET_NO_APPLY=1 (tests) stages and commits but never reloads anything.
+. /usr/share/libubox/jshn.sh
+. /usr/lib/dn-net/uplink.sh
+
+STA_IF=${DN_NET_STA_IF:-phy0-sta0}
+AP_IF=${DN_NET_AP_IF:-phy0-ap0}
+LEASES=${DN_NET_LEASES:-/tmp/dhcp.leases}
+
+# A refusal or failure leaves NOTHING staged: a later `uci commit` by anyone would otherwise apply half a change.
+revert_all() { for c in network wireless dhcp firewall dn-net; do uci -q revert "$c"; done; }
+bad() { revert_all; echo "$*" >&2; exit 2; }
+die() { revert_all; echo "$*" >&2; exit 1; }
+# Stage a uci write, or fail the request with nothing staged. The message names the option, never its value.
+u() { uci "$@" 2>/dev/null || die "uci $1 ${2%%=*} failed"; }
+commit() { uci commit "$@" || die "uci commit $* failed"; }
+# Apply in the background after the caller has its answer; never in tests.
+later() { [ -n "${DN_NET_NO_APPLY:-}" ] && return 0; (sleep "${1:-2}"; shift; "$@") </dev/null >/dev/null 2>&1 & }
+input() { json_load "$(cat)" 2>/dev/null || bad "the request body is not JSON"; }
+
+is_ip4() {
+	echo "$1" | awk -F. 'NF == 4 { for (i = 1; i <= 4; i++) if ($i !~ /^[0-9]+$/ || $i > 255) exit 1; exit 0 } { exit 1 }'
+}
+is_mac() { echo "$1" | grep -qiE '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$'; }
+# %.0f, not %d: awk's %d overflows above 2^31, and every 192.168.x.x address is above it.
+ip2n() { echo "$1" | awk -F. '{ printf "%.0f", (($1 * 256 + $2) * 256 + $3) * 256 + $4 }'; }
+n2ip() { awk -v n="$1" 'BEGIN { printf "%d.%d.%d.%d", int(n / 16777216) % 256, int(n / 65536) % 256, int(n / 256) % 256, n % 256 }'; }
+
+# ---- wan: which uplink carries the default route -------------------------------------------------
+v_wan() {
+	_dev=$(ip -4 route show default 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+	_kind=none; _net=""
+	case "$_dev" in
+		"") ;;
+		"$STA_IF") _kind=repeater; _net=wwan ;;
+		*) _kind=wired; _net=wan ;;
+	esac
+	json_init
+	json_add_string wan "$_kind"
+	json_add_boolean up "$([ -n "$_dev" ] && echo 1 || echo 0)"
+	if [ -n "$_net" ]; then
+		_ip=$(ifstatus "$_net" 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)
+		[ -n "$_ip" ] && json_add_string ip "$_ip"
+	fi
+	json_dump
+}
+
+# ---- lan -----------------------------------------------------------------------------------------
+v_lan_get() {
+	_ip=$(uci -q get network.lan.ipaddr); _mask=$(uci -q get network.lan.netmask)
+	json_init
+	json_add_string ip "$_ip"
+	json_add_string netmask "$_mask"
+	_st=$(uci -q get dhcp.lan.start); _lim=$(uci -q get dhcp.lan.limit)
+	if [ -n "$_st" ] && [ -n "$_lim" ] && is_ip4 "$_ip" && is_ip4 "$_mask"; then
+		_base=$(( $(ip2n "$_ip") & $(ip2n "$_mask") ))
+		json_add_string dhcpStart "$(n2ip $((_base + _st)))"
+		json_add_string dhcpEnd "$(n2ip $((_base + _st + _lim - 1)))"
+	fi
+	json_dump
+}
+
+v_lan_set() {
+	input
+	json_get_vars ip netmask dhcpStart dhcpEnd
+	is_ip4 "$ip" || bad "ip is not an IPv4 address"
+	is_ip4 "${netmask:-255.255.255.0}" || bad "netmask is not an IPv4 mask"
+	u set network.lan.ipaddr="$ip"
+	u set network.lan.netmask="${netmask:-255.255.255.0}"
+	if [ -n "$dhcpStart" ] || [ -n "$dhcpEnd" ]; then
+		is_ip4 "$dhcpStart" && is_ip4 "$dhcpEnd" || bad "dhcpStart and dhcpEnd must both be IPv4 addresses"
+		_base=$(( $(ip2n "$ip") & $(ip2n "${netmask:-255.255.255.0}") ))
+		_s=$(( $(ip2n "$dhcpStart") - _base )); _e=$(( $(ip2n "$dhcpEnd") - _base ))
+		[ "$_s" -gt 0 ] && [ "$_e" -ge "$_s" ] && [ $(( $(ip2n "$dhcpEnd") & $(ip2n "${netmask:-255.255.255.0}") )) -eq "$_base" ] ||
+			bad "the DHCP range must lie inside the LAN, start before end"
+		u set dhcp.lan.start="$_s"
+		u set dhcp.lan.limit="$((_e - _s + 1))"
+	fi
+	commit network; commit dhcp
+	# A LAN move cuts off whoever asked over the LAN: answer first, then move (the app re-finds the router).
+	later 2 sh -c '/etc/init.d/network reload; /etc/init.d/dnsmasq reload'
+	v_lan_get
+}
+
+# ---- wifi: the router's own access points --------------------------------------------------------
+v_wifi_get() {
+	json_init
+	json_add_array radios
+	for _d in $(uci -q show wireless | sed -n "s/^wireless\.\([^.=]*\)=wifi-device$/\1/p"); do
+		json_add_object
+		json_add_string device "$_d"
+		_band=$(uci -q get "wireless.$_d.band")
+		json_add_string band "$(echo "${_band:-2g}" | tr 'g' 'G')"
+		_ch=$(uci -q get "wireless.$_d.channel"); [ "$_ch" = auto ] || [ -z "$_ch" ] && _ch=0
+		json_add_int channel "$_ch"
+		json_add_array channels
+		_phy=$(echo "$_d" | sed 's/^radio/phy/')
+		for _c in $(iwinfo "$_phy" freqlist 2>/dev/null | sed -n 's/.*(Channel \([0-9]*\)).*/\1/p'); do json_add_int "" "$_c"; done
+		json_close_array
+		_tx=$(uci -q get "wireless.$_d.txpower"); [ -n "$_tx" ] && json_add_string txpower "$_tx"
+		json_add_array encryptions
+		for _e in none psk2 psk-mixed sae sae-mixed; do json_add_string "" "$_e"; done
+		json_close_array
+		json_add_array networks
+		for _i in $(uci -q show wireless | sed -n "s/^wireless\.\([^.=]*\)=wifi-iface$/\1/p"); do
+			[ "$(uci -q get "wireless.$_i.device")" = "$_d" ] && [ "$(uci -q get "wireless.$_i.mode")" = ap ] || continue
+			json_add_object
+			json_add_string iface "$_i"
+			json_add_string ssid "$(uci -q get "wireless.$_i.ssid")"
+			_k=$(uci -q get "wireless.$_i.key"); [ -n "$_k" ] && json_add_string key "$_k"
+			json_add_string encryption "$(uci -q get "wireless.$_i.encryption")"
+			json_add_boolean enabled "$([ "$(uci -q get "wireless.$_i.disabled")" = 1 ] && echo 0 || echo 1)"
+			json_add_boolean guest "$([ "$(uci -q get "wireless.$_i.network")" = guest ] && echo 1 || echo 0)"
+			json_add_boolean hidden "$([ "$(uci -q get "wireless.$_i.hidden")" = 1 ] && echo 1 || echo 0)"
+			json_close_object
+		done
+		json_close_array
+		json_close_object
+	done
+	json_close_array
+	json_dump
+}
+
+v_wifi_set() {
+	input
+	json_get_vars iface ssid key encryption enabled hidden device channel txpower
+	[ -n "$iface" ] || [ -n "$device" ] || bad "name an iface (an access point) or a device (a radio)"
+	if [ -n "$iface" ]; then
+		[ "$(uci -q get "wireless.$iface")" = wifi-iface ] && [ "$(uci -q get "wireless.$iface.mode")" = ap ] ||
+			bad "no access point '$iface' (the uplink is changed with uplink-join)"
+		if [ -n "$encryption" ]; then
+			case "$encryption" in none|psk2|psk-mixed|sae|sae-mixed) ;; *) bad "unknown encryption '$encryption'" ;; esac
+			u set "wireless.$iface.encryption=$encryption"
+		fi
+		_enc=$(uci -q get "wireless.$iface.encryption")
+		if [ -n "$key" ]; then
+			[ "${#key}" -ge 8 ] && [ "${#key}" -le 63 ] || bad "a Wi-Fi key is 8 to 63 characters"
+			u set "wireless.$iface.key=$key"
+		fi
+		[ "$_enc" = none ] || [ -n "$(uci -q get "wireless.$iface.key")" ] || bad "an encrypted network needs a key"
+		if [ -n "$ssid" ]; then
+			[ "${#ssid}" -le 32 ] || bad "an SSID is at most 32 characters"
+			u set "wireless.$iface.ssid=$ssid"
+		fi
+		[ -n "$enabled" ] && u set "wireless.$iface.disabled=$([ "$enabled" = 1 ] && echo 0 || echo 1)"
+		[ -n "$hidden" ] && u set "wireless.$iface.hidden=$([ "$hidden" = 1 ] && echo 1 || echo 0)"
+	fi
+	if [ -n "$device" ]; then
+		[ "$(uci -q get "wireless.$device")" = wifi-device ] || bad "no radio '$device'"
+		if [ -n "$channel" ]; then
+			case "$channel" in 0) u set "wireless.$device.channel=auto" ;; *[!0-9]*) bad "channel is a number (0 = auto)" ;; *) u set "wireless.$device.channel=$channel" ;; esac
+		fi
+		[ -n "$txpower" ] && u set "wireless.$device.txpower=$txpower"
+	fi
+	commit wireless
+	later 2 wifi reload
+	v_wifi_get
+}
+
+# ---- uplink: the router as a Wi-Fi client (repeater / WISP), with its role -----------------------
+# iwinfo scan -> one tab-separated line per cell: ssid bssid channel signal encryption
+scan_cells() {
+	iwinfo "${1:-phy0}" scan 2>/dev/null | awk '
+		function flush() { if (b != "") printf "%s\t%s\t%s\t%s\t%s\n", s, b, c, g, e; s = ""; b = ""; c = ""; g = ""; e = "" }
+		/Cell [0-9]+ - Address:/ { flush(); b = $NF }
+		/ESSID:/ { l = $0; sub(/.*ESSID: "?/, "", l); sub(/"$/, "", l); s = l }
+		/Channel:/ { for (i = 1; i <= NF; i++) if ($i == "Channel:") c = $(i + 1) }
+		/Signal:/ { for (i = 1; i <= NF; i++) if ($i == "Signal:") g = $(i + 1) }
+		/Encryption:/ { l = $0; sub(/.*Encryption: */, "", l); e = l }
+		END { flush() }'
+}
+# iwinfo's encryption description -> the uci encryption a client needs.
+enc_for() {
+	case "$1" in
+		none|"") echo none ;;
+		*WPA3*WPA2*|*mixed*WPA2*WPA3*|*"WPA2/WPA3"*) echo sae-mixed ;;
+		*WPA3*|*SAE*) echo sae ;;
+		*"WPA/WPA2"*|*mixed*) echo psk-mixed ;;
+		*) echo psk2 ;;
+	esac
+}
+saved_ssids() { uci -q show dn-net | sed -n "s/^dn-net\.[^.]*\.ssid='\(.*\)'$/\1/p"; }
+
+v_uplink_scan() {
+	_saved=$(saved_ssids)
+	scan_cells phy0 > /tmp/dn-net.scan.$$
+	json_init
+	json_add_array networks
+	while IFS='	' read -r _s _b _c _g _e; do
+		[ -n "$_s" ] && [ "$_s" != unknown ] || continue
+		json_add_object
+		json_add_string ssid "$_s"
+		json_add_string bssid "$_b"
+		case "$_c" in ''|*[!0-9]*) json_add_string band "" ;; *) json_add_string band "$([ "$_c" -le 14 ] && echo 2g || echo 5g)"; json_add_int channel "$_c" ;; esac
+		case "$_g" in -[0-9]*) json_add_int signal "$_g" ;; esac
+		json_add_boolean secured "$([ "$(enc_for "$_e")" = none ] && echo 0 || echo 1)"
+		json_add_string encryption "$_e"
+		json_add_boolean saved "$(printf '%s\n' "$_saved" | grep -qxF "$_s" && echo 1 || echo 0)"
+		json_close_object
+	done < /tmp/dn-net.scan.$$
+	rm -f /tmp/dn-net.scan.$$
+	json_close_array
+	json_dump
+}
+
+v_uplink_get() {
+	json_init
+	if [ "$(uci -q get wireless.dn_uplink.mode)" != sta ] || [ "$(uci -q get wireless.dn_uplink.disabled)" = 1 ]; then
+		json_add_string state idle
+	else
+		json_add_string ssid "$(uci -q get wireless.dn_uplink.ssid)"
+		json_add_string role "$(dn_uplink_role wwan)"
+		_ip=$(ifstatus wwan 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)
+		if [ -n "$_ip" ]; then
+			json_add_string state connected
+			json_add_string ip "$_ip"
+			_gw=$(ifstatus wwan 2>/dev/null | jsonfilter -e '@.route[@.target="0.0.0.0"].nexthop' 2>/dev/null | head -1)
+			[ -n "$_gw" ] && json_add_string gateway "$_gw"
+			_info=$(iwinfo "$STA_IF" info 2>/dev/null)
+			_ch=$(echo "$_info" | sed -n 's/.*Channel: \([0-9]*\).*/\1/p' | head -1)
+			[ -n "$_ch" ] && { json_add_int channel "$_ch"; json_add_string band "$([ "$_ch" -le 14 ] && echo 2g || echo 5g)"; }
+			_sig=$(echo "$_info" | sed -n 's/.*Signal: \(-[0-9]*\) dBm.*/\1/p' | head -1)
+			[ -n "$_sig" ] && json_add_int signal "$_sig"
+		else
+			json_add_string state connecting
+		fi
+	fi
+	json_dump
+}
+
+v_uplink_join() {
+	input
+	json_get_vars ssid key bssid remember role
+	[ -n "$ssid" ] && [ "${#ssid}" -le 32 ] || bad "ssid is required (at most 32 characters)"
+	case "${role:-wan}" in lan|wan) ;; *) bad "role is lan (the boat's own network) or wan (an internet uplink)" ;; esac
+	[ -z "$key" ] || { [ "${#key}" -ge 8 ] && [ "${#key}" -le 63 ]; } || bad "a Wi-Fi key is 8 to 63 characters"
+	# The client encryption the network needs, from what the router sees.
+	_seen=$(scan_cells phy0 | awk -F'\t' -v s="$ssid" '$1 == s { print $5; exit }')
+	_enc=$(enc_for "$_seen")
+	[ -n "$_seen" ] || _enc=$([ -n "$key" ] && echo psk2 || echo none)
+	[ "$_enc" = none ] || [ -n "$key" ] || bad "'$ssid' is secured: a key is required"
+	_radio=$(uci -q show wireless | sed -n "s/^wireless\.\([^.=]*\)=wifi-device$/\1/p" | head -1)
+	[ -n "$_radio" ] || die "no radio"
+	u set wireless.dn_uplink=wifi-iface
+	u set "wireless.dn_uplink.device=$_radio"
+	u set wireless.dn_uplink.mode=sta
+	u set wireless.dn_uplink.network=wwan
+	u set "wireless.dn_uplink.ssid=$ssid"
+	u set "wireless.dn_uplink.encryption=$_enc"
+	if [ -n "$key" ]; then u set "wireless.dn_uplink.key=$key"; else uci -q delete wireless.dn_uplink.key; fi
+	if [ -n "$bssid" ]; then is_mac "$bssid" || bad "bssid is not a MAC"; u set "wireless.dn_uplink.bssid=$bssid"; else uci -q delete wireless.dn_uplink.bssid; fi
+	u set wireless.dn_uplink.disabled=0
+	u set "wireless.$_radio.disabled=0"
+	u set network.wwan=interface
+	u set network.wwan.proto=dhcp
+	u set network.wwan.metric=20
+	dn_uplink_zone "${role:-wan}" wwan || die "could not set the uplink's firewall"
+	if [ "${remember:-1}" = 1 ]; then
+		_sec=$(uci -q show dn-net | sed -n "s/^dn-net\.\([^.]*\)\.ssid='$(printf '%s' "$ssid" | sed 's/[]\/$*.^[]/\\&/g')'$/\1/p" | head -1)
+		[ -n "$_sec" ] || _sec=$(uci add dn-net uplink) || die "uci add dn-net failed"
+		u set "dn-net.$_sec.ssid=$ssid"
+		if [ -n "$key" ]; then u set "dn-net.$_sec.key=$key"; else uci -q delete "dn-net.$_sec.key"; fi
+		u set "dn-net.$_sec.role=${role:-wan}"
+		commit dn-net
+	fi
+	commit network; commit wireless; commit firewall
+	later 2 sh -c 'wifi reload; /etc/init.d/firewall reload'
+	json_init
+	json_add_string state connecting
+	json_add_string ssid "$ssid"
+	json_add_string role "${role:-wan}"
+	json_dump
+}
+
+v_uplink_disconnect() {
+	[ "$(uci -q get wireless.dn_uplink)" = wifi-iface ] || { json_init; json_add_string state idle; json_dump; return; }
+	u set wireless.dn_uplink.disabled=1
+	commit wireless
+	later 2 wifi reload
+	json_init; json_add_string state idle; json_dump
+}
+
+v_uplink_saved() {
+	json_init
+	json_add_array networks
+	for _s in $(uci -q show dn-net | sed -n "s/^dn-net\.\([^.=]*\)=uplink$/\1/p"); do
+		json_add_object
+		json_add_string ssid "$(uci -q get "dn-net.$_s.ssid")"
+		json_add_string role "$(uci -q get "dn-net.$_s.role")"
+		json_close_object
+	done
+	json_close_array
+	json_dump
+}
+
+v_uplink_forget() {
+	input
+	json_get_vars ssid
+	[ -n "$ssid" ] || bad "ssid is required"
+	_n=0
+	for _s in $(uci -q show dn-net | sed -n "s/^dn-net\.\([^.=]*\)=uplink$/\1/p"); do
+		[ "$(uci -q get "dn-net.$_s.ssid")" = "$ssid" ] || continue
+		u delete "dn-net.$_s"; _n=$((_n + 1))
+	done
+	[ "$_n" -gt 0 ] || bad "no saved network '$ssid'"
+	commit dn-net
+	v_uplink_saved
+}
+
+# ---- clients: who is on the router's LAN ---------------------------------------------------------
+blocked_macs() { uci -q show firewall | sed -n "s/^firewall\.dn_block_[^.]*\.src_mac='\(.*\)'$/\1/p" | tr 'A-F' 'a-f'; }
+
+v_clients() {
+	_assoc=$(iwinfo "$AP_IF" assoclist 2>/dev/null | awk '/^[0-9A-Fa-f][0-9A-Fa-f](:[0-9A-Fa-f][0-9A-Fa-f]){5}/ { print tolower($1) }')
+	_blocked=$(blocked_macs)
+	_neigh=$(ip -4 neigh show dev br-lan 2>/dev/null)
+	json_init
+	json_add_array clients
+	{
+		[ -r "$LEASES" ] && awk '{ print tolower($2) "\t" $3 "\t" $4 }' "$LEASES"
+		echo "$_neigh" | awk '{ for (i = 2; i < NF; i++) if ($i == "lladdr") print tolower($(i + 1)) "\t" $1 "\t*" }'
+		for _m in $_assoc; do printf '%s\t\t*\n' "$_m"; done
+	} | awk -F'\t' '$1 != "" && !seen[$1]++ { print }' > /tmp/dn-net.clients.$$
+	# Fill IP/name from any source that has them.
+	while IFS='	' read -r _mac _ip _name; do
+		[ -n "$_ip" ] || _ip=$(echo "$_neigh" | awk -v m="$_mac" '{ for (i = 2; i < NF; i++) if ($i == "lladdr" && tolower($(i + 1)) == m) { print $1; exit } }')
+		[ -n "$_ip" ] || _ip=$(awk -v m="$_mac" 'tolower($2) == m { print $3; exit }' "$LEASES" 2>/dev/null)
+		[ "$_name" = "*" ] && _name=$(awk -v m="$_mac" 'tolower($2) == m && $4 != "*" { print $4; exit }' "$LEASES" 2>/dev/null)
+		[ "$_name" = "*" ] && _name=""
+		_wl=0; printf '%s\n' "$_assoc" | grep -qx "$_mac" && _wl=1
+		_st=$(echo "$_neigh" | awk -v m="$_mac" '{ for (i = 2; i < NF; i++) if ($i == "lladdr" && tolower($(i + 1)) == m) { print $NF; exit } }')
+		_on=0; { [ "$_wl" = 1 ] || [ "$_st" = REACHABLE ] || [ "$_st" = DELAY ] || [ "$_st" = PROBE ]; } && _on=1
+		json_add_object
+		json_add_string mac "$_mac"
+		[ -n "$_ip" ] && json_add_string ip "$_ip"
+		[ -n "$_name" ] && json_add_string name "$_name"
+		json_add_boolean online "$_on"
+		json_add_string link "$([ "$_wl" = 1 ] && echo 2g || { [ -n "$_st" ] && echo wired || echo unknown; })"
+		json_add_boolean blocked "$(printf '%s\n' "$_blocked" | grep -qx "$_mac" && echo 1 || echo 0)"
+		json_close_object
+	done < /tmp/dn-net.clients.$$
+	rm -f /tmp/dn-net.clients.$$
+	json_close_array
+	json_dump
+}
+
+v_client_block() {
+	input
+	json_get_vars mac blocked
+	is_mac "$mac" || bad "mac is not a MAC address"
+	_m=$(echo "$mac" | tr 'A-F' 'a-f'); _id=dn_block_$(echo "$_m" | tr -d ':')
+	uci -q delete "firewall.$_id"
+	if [ "${blocked:-1}" = 1 ]; then
+		# Denied internet, still on the LAN: nothing it sends is forwarded anywhere.
+		u set "firewall.$_id=rule"
+		u set "firewall.$_id.name=dn-net: $_m blocked"
+		u set "firewall.$_id.src=lan"
+		u set "firewall.$_id.src_mac=$_m"
+		u set "firewall.$_id.dest=*"
+		u set "firewall.$_id.target=REJECT"
+	fi
+	commit firewall
+	later 1 /etc/init.d/firewall reload
+	v_clients
+}
+
+# ---- reservations --------------------------------------------------------------------------------
+v_reservations() {
+	json_init
+	json_add_array reservations
+	for _h in $(uci -q show dhcp | sed -n "s/^dhcp\.\([^.=]*\)=host$/\1/p"); do
+		json_add_object
+		json_add_string mac "$(uci -q get "dhcp.$_h.mac" | tr 'A-F' 'a-f')"
+		json_add_string ip "$(uci -q get "dhcp.$_h.ip")"
+		_n=$(uci -q get "dhcp.$_h.name"); [ -n "$_n" ] && json_add_string name "$_n"
+		json_close_object
+	done
+	json_close_array
+	json_dump
+}
+host_by_mac() { for _h in $(uci -q show dhcp | sed -n "s/^dhcp\.\([^.=]*\)=host$/\1/p"); do [ "$(uci -q get "dhcp.$_h.mac" | tr 'A-F' 'a-f')" = "$1" ] && echo "$_h"; done; }
+
+v_reservation_add() {
+	input
+	json_get_vars mac ip name
+	is_mac "$mac" || bad "mac is not a MAC address"
+	is_ip4 "$ip" || bad "ip is not an IPv4 address"
+	_m=$(echo "$mac" | tr 'A-F' 'a-f')
+	for _h in $(host_by_mac "$_m"); do uci -q delete "dhcp.$_h"; done
+	for _h in $(uci -q show dhcp | sed -n "s/^dhcp\.\([^.=]*\)=host$/\1/p"); do
+		[ "$(uci -q get "dhcp.$_h.ip")" = "$ip" ] && bad "$ip is already reserved for $(uci -q get "dhcp.$_h.mac")"
+	done
+	_s=$(uci add dhcp host) || die "uci add dhcp host failed"
+	u set "dhcp.$_s.mac=$_m"
+	u set "dhcp.$_s.ip=$ip"
+	[ -n "$name" ] && u set "dhcp.$_s.name=$name"
+	commit dhcp
+	later 1 /etc/init.d/dnsmasq reload
+	v_reservations
+}
+
+v_reservation_remove() {
+	input
+	json_get_vars mac
+	is_mac "$mac" || bad "mac is not a MAC address"
+	_hs=$(host_by_mac "$(echo "$mac" | tr 'A-F' 'a-f')")
+	[ -n "$_hs" ] || bad "no reservation for $mac"
+	for _h in $_hs; do u delete "dhcp.$_h"; done
+	commit dhcp
+	later 1 /etc/init.d/dnsmasq reload
+	v_reservations
+}
+
+# ---- reboot --------------------------------------------------------------------------------------
+v_reboot() {
+	later 3 reboot
+	json_init; json_add_string status rebooting; json_dump
+}
+
+case "${1:-}" in
+	wan) v_wan ;;
+	lan-get) v_lan_get ;;
+	lan-set) v_lan_set ;;
+	wifi-get) v_wifi_get ;;
+	wifi-set) v_wifi_set ;;
+	uplink-scan) v_uplink_scan ;;
+	uplink-get) v_uplink_get ;;
+	uplink-join) v_uplink_join ;;
+	uplink-disconnect) v_uplink_disconnect ;;
+	uplink-saved) v_uplink_saved ;;
+	uplink-forget) v_uplink_forget ;;
+	clients) v_clients ;;
+	client-block) v_client_block ;;
+	reservations) v_reservations ;;
+	reservation-add) v_reservation_add ;;
+	reservation-remove) v_reservation_remove ;;
+	reboot) v_reboot ;;
+	*) bad "usage: dn-net <verb>" ;;
+esac

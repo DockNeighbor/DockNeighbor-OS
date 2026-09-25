@@ -31,6 +31,7 @@ jobs:
                    feed/dn-os-upgrade/files/etc/uci-defaults/94-dn-os-feed \
                    feed/dn-hub-lite-os/files/usr/libexec/dn-hub-lite/restore feed/dn-hub-lite-os/files/etc/init.d/dn-hub-lite-restore \
                    feed/dn-hub-lite-os/files/etc/uci-defaults/95-dn-hub-lite \
+                   feed/dn-net/files/usr/sbin/dn-net feed/dn-net/files/usr/lib/dn-net/uplink.sh \
                    scripts/release-manifest.sh scripts/publish-feed.sh scripts/check-feed-versions.sh \
                    scripts/build-hub-lite.sh scripts/check-hub-lite-image.sh; do
             sh -n "$f"
@@ -41,6 +42,8 @@ jobs:
         run: sh feed/dn-os-upgrade/test/upgrade.test.sh
       - name: Package upgrader (level 1, dn-* packages), on real OpenWrt userland
         run: sh feed/dn-os-upgrade/test/pkg-upgrade.test.sh
+      - name: dn-net (the DN device API's OS half), on real OpenWrt userland
+        run: sh feed/dn-net/test/net.test.sh
       - name: Every changed package bumps its version (else routers never receive it)
         if: github.event_name == 'pull_request'
         run: sh scripts/check-feed-versions.sh "origin/${{ github.base_ref }}"
