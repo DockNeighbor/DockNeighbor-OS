@@ -10,7 +10,8 @@
 # uplink-saved, uplink-forget, clients, client-block, reservations, reservation-add, reservation-remove, reboot.
 #
 # A change that would cut the caller off (a LAN move, a Wi-Fi reload, a reboot) is applied AFTER the answer, in
-# the background. DN_NET_NO_APPLY=1 (tests) stages and commits but never reloads anything.
+# the background. DN_NET_NO_APPLY=1 (tests) stages and commits but never reloads anything. DN_NET_REDACT=1 leaves
+# Wi-Fi keys out of wifi-get (the door sets it for a caller who may read but not configure).
 . /usr/share/libubox/jshn.sh
 . /usr/lib/dn-net/uplink.sh
 
@@ -118,7 +119,8 @@ v_wifi_get() {
 			json_add_object
 			json_add_string iface "$_i"
 			json_add_string ssid "$(uci -q get "wireless.$_i.ssid")"
-			_k=$(uci -q get "wireless.$_i.key"); [ -n "$_k" ] && json_add_string key "$_k"
+			# DN_NET_REDACT=1: the door's caller may read but not configure, so no Wi-Fi keys.
+			_k=$(uci -q get "wireless.$_i.key"); [ -n "$_k" ] && [ -z "${DN_NET_REDACT:-}" ] && json_add_string key "$_k"
 			json_add_string encryption "$(uci -q get "wireless.$_i.encryption")"
 			json_add_boolean enabled "$([ "$(uci -q get "wireless.$_i.disabled")" = 1 ] && echo 0 || echo 1)"
 			json_add_boolean guest "$([ "$(uci -q get "wireless.$_i.network")" = guest ] && echo 1 || echo 0)"

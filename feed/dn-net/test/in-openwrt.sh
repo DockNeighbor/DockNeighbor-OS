@@ -111,6 +111,8 @@ eq "wifi-get: one radio, band 2G, auto channel as 0" "$(j "$r" '@.radios[0].devi
 eq "wifi-get: channels from the radio" "$(j "$r" '@.radios[0].channels[*]' | tr '\n' ' ' | sed 's/ $//')" "1 6 11"
 eq "wifi-get: lists the access point" "$(j "$r" '@.radios[0].networks[0].iface') $(j "$r" '@.radios[0].networks[0].ssid') $(j "$r" '@.radios[0].networks[0].enabled')" "dn_ap Boat AP true"
 eq "wifi-get: never lists the uplink (a client, not an AP)" "$(j "$r" '@.radios[0].networks[*].iface' | wc -l | tr -d ' ')" "1"
+eq "wifi-get: the key is there for a caller who may configure" "$(j "$r" '@.radios[0].networks[0].key')" "ap-secret-1"
+eq "wifi-get: DN_NET_REDACT leaves every key out" "$(DN_NET_REDACT=1 net wifi-get | grep -c '"key"')" "0"
 r=$(net wifi-set '{"iface":"dn_ap","ssid":"Seas the Day","key":"new-secret-22"}'); eq "wifi-set: exit" "$?" 0
 eq "wifi-set: committed" "$(uci get wireless.dn_ap.ssid) $(uci get wireless.dn_ap.key)" "Seas the Day new-secret-22"
 net wifi-set '{"iface":"dn_ap","encryption":"sae","key":"short"}' >/dev/null; eq "wifi-set: a 5-character key is refused" "$?" 2
