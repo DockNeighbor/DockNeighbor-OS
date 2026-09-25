@@ -1,16 +1,22 @@
 #!/bin/sh
-# Build the DockNeighbor OS hub-lite image (GL.iNet GL-MT300N-V2) from pinned upstream OpenWrt artifacts:
-# the SDK compiles only what we change (dropbear with Ed25519, dn-handoff), and the ImageBuilder assembles
-# the image. No full OpenWrt tree, so this runs on a stock CI runner.
-#   usage: scripts/build-hub-lite.sh        (x86-64 Linux; WORK_DIR defaults to ./build/hub-lite)
-# Output: out/hub-lite/ — the sysupgrade image, SHA256SUMS and the package manifest. The image is then
-# checked by scripts/check-hub-lite-image.sh, which fails the build on any missing guarantee.
+# Build the DockNeighbor OS hub-lite image for one board (profiles/hub-lite/boards/<device>/) from pinned upstream
+# OpenWrt artifacts: the SDK compiles only what we change (dropbear with Ed25519, the dn-* packages), and the
+# ImageBuilder assembles the image. No full OpenWrt tree, so this runs on a stock CI runner.
+#   usage: scripts/build-hub-lite.sh [device]   (x86-64 Linux; WORK_DIR defaults to ./build/hub-lite)
+#          no device: every board, one after another
+# Output: out/hub-lite/<device>/ — the sysupgrade image, SHA256SUMS, the package manifest, and feed/ (this board's
+# build of every dn-* package, for the dn_os feed). The image is then checked by scripts/check-hub-lite-image.sh,
+# which fails the build on any missing guarantee.
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
-prof="$root/profiles/hub-lite"
-. "$prof/upstream.env"
-. "$prof/profile.env"
-work=${WORK_DIR:-$root/build/hub-lite}; dl=${DL_DIR:-$work/dl}; out="$root/out/hub-lite"
+. "$root/scripts/hub-lite-board.sh"
+if [ -z "${1:-}" ]; then
+  for b in $(hub_lite_boards); do sh "$0" "$b"; done
+  exit 0
+fi
+hub_lite_load "$1"
+work=${WORK_DIR:-$root/build/hub-lite}; dl=${DL_DIR:-$work/dl}; out="$root/out/hub-lite/$DEVICE"
+echo "build: DockNeighbor OS hub-lite $DN_OS_VERSION for $BOARD_TITLE ($DEVICE, OpenWrt $OPENWRT_VERSION $OPENWRT_TARGET)"
 jobs=${JOBS:-$(nproc 2>/dev/null || echo 2)}
 
 missing=""
@@ -86,11 +92,17 @@ make -j"$jobs" $pkgs || make -j1 V=s $pkgs
 # dropbear, a target default package, lands under bin/targets/; feed packages under bin/packages/.
 db_ipk=$(find bin -name "dropbear_*-r$((rel + 100))_*.ipk" | head -1)
 [ -n "$db_ipk" ] || { echo "build: the SDK produced no dropbear package" >&2; exit 1; }
-# The dn_os feed: exactly one .ipk per package in feed/.
+# The dn_os feed: exactly one .ipk per package in feed/, each either arch-independent (all) or built for this
+# board's arch. A compiled package landing under any other arch means the board's PKG_ARCH is wrong, and the feed
+# would offer this board's routers nothing they can install.
 rm -rf "$out-feed"; mkdir -p "$out-feed"
 for p in $dn_pkgs; do
   f=$(find bin -name "${p}_*.ipk" | head -1)
   [ -n "$f" ] || { echo "build: the SDK produced no $p package" >&2; exit 1; }
+  case "$(basename "$f")" in
+    *_all.ipk|*_"$PKG_ARCH".ipk) ;;
+    *) echo "build: $(basename "$f") is neither arch all nor this board's $PKG_ARCH" >&2; exit 1 ;;
+  esac
   cp "$f" "$out-feed/"
 done
 
@@ -101,6 +113,8 @@ cd "$ib"
 rm -rf packages/*.ipk bin files
 cp "$sdk/$db_ipk" "$out-feed"/*.ipk "$dl/$hl_ipk" packages/
 mkdir -p files/etc; [ -d "$prof/files" ] && cp -R "$prof/files/." files/
+# Board-specific files (e.g. the GL-X750's USB power switch); the image check proves each one is in the image.
+[ -d "$prof/boards/$DEVICE/files" ] && cp -R "$prof/boards/$DEVICE/files/." files/
 cat > files/etc/dn-release <<EOF
 DN_OS_PROFILE=hub-lite
 DN_OS_VERSION=$DN_OS_VERSION
@@ -108,7 +122,7 @@ DN_OS_UPSTREAM="OpenWrt $OPENWRT_VERSION $OPENWRT_TARGET"
 DN_OS_HUB_LITE=$HUB_LITE_VERSION
 DN_OS_CHANNEL_URL=$DN_OS_CHANNEL_URL
 EOF
-make image PROFILE="$DEVICE" PACKAGES="$PACKAGES" FILES="$ib/files" DISABLED_SERVICES="$DISABLED_SERVICES" \
+make image PROFILE="$DEVICE" PACKAGES="$PACKAGES $BOARD_PACKAGES" FILES="$ib/files" DISABLED_SERVICES="$DISABLED_SERVICES" \
   EXTRA_IMAGE_NAME="dn-hub-lite-$DN_OS_VERSION"
 
 img=$(ls bin/targets/$OPENWRT_TARGET/*"$DEVICE"-squashfs-sysupgrade.bin 2>/dev/null | head -1)
@@ -117,6 +131,6 @@ rm -rf "$out"; mkdir -p "$out"
 mv "$out-feed" "$out/feed"
 cp "$img" "$out/"
 cp bin/targets/$OPENWRT_TARGET/*.manifest "$out/"
-sh "$root/scripts/check-hub-lite-image.sh" "$out/$(basename "$img")"
+sh "$root/scripts/check-hub-lite-image.sh" "$out/$(basename "$img")" "$DEVICE"
 (cd "$out" && sha256sum ./*.bin > SHA256SUMS)
 cat "$out/SHA256SUMS"

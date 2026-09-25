@@ -2,9 +2,9 @@ include $(TOPDIR)/rules.mk
 
 # Carry a router's site settings across a flash (handoff/README.md). The vendor-side reader writes a
 # brand-neutral /etc/dn/site.json into the sysupgrade config tarball; on first boot this package turns
-# it into this firmware's own config: LAN address, access point, uplink, reservations, admin password.
+# it into this firmware's own config: LAN address, access point, uplink, LTE modem, reservations, admin password.
 PKG_NAME:=dn-handoff
-PKG_VERSION:=1.3.0
+PKG_VERSION:=1.4.0
 PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=SC4 Technologies

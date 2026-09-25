@@ -1,7 +1,7 @@
 #!/bin/sh
 # dn-handoff: turn the brand-neutral /etc/dn/site.json (handoff/README.md) into this firmware's config, so a
-# router flashed from its vendor firmware comes back on the same LAN address, access point and uplink, with
-# the same admin password. Runs from uci-defaults at first boot, before the network starts.
+# router flashed from its vendor firmware comes back on the same LAN address, access point, uplink and LTE modem
+# settings, with the same admin password. Runs from uci-defaults at first boot, before the network starts.
 # Exit 0 = applied (or nothing to apply); non-zero = keep the uci-defaults script and retry next boot.
 SITE=/etc/dn/site.json
 RESULT=/etc/dn/handoff.result
@@ -46,21 +46,29 @@ if has lan; then
 fi
 
 # Wi-Fi, only when the site has any: create the radio sections if the first-boot detect has not run yet.
-radio=""
+# use_radio BAND sets $radio to this board's radio for that band (default 2g): on a dual-band board the site's
+# 2.4 GHz access point must not land on the 5 GHz radio (the GL-X750's radio0), where the boat's 2.4 GHz-only
+# devices can't join it. A board without that band (a single-band board) uses its first radio.
+radio=""; enabled_radios=" "
 use_radio() {
-	[ -n "$radio" ] && return 0
+	case "${1:-2g}" in 2g|5g|6g) ;; *) fail "unknown Wi-Fi band '$1'" ;; esac
 	uci -q show wireless | grep -q '=wifi-device$' || wifi config
-	radio=$(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p' | head -1)
+	_all=$(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p')
+	radio=""
+	for _r in $_all; do [ "$(uci -q get "wireless.$_r.band")" = "${1:-2g}" ] && { radio=$_r; break; }; done
+	[ -n "$radio" ] || radio=$(echo "$_all" | head -1)
 	[ -n "$radio" ] || fail "no radio"
+	case "$enabled_radios" in *" $radio "*) return 0 ;; esac
 	u set wireless.$radio.disabled=0
 	u set wireless.$radio.channel=auto
 	[ -n "$country" ] && u set wireless.$radio.country="$country"
+	enabled_radios="$enabled_radios$radio "
 }
 
 ap=""
 if has ap; then
-	use_radio
-	json_get_vars ssid enc key
+	json_get_vars ssid enc key band
+	use_radio "$band"
 	ap=$ssid
 	uci -q delete wireless.dn_ap
 	u set wireless.dn_ap=wifi-iface
@@ -77,9 +85,9 @@ fi
 
 uplink=""
 if has uplink; then
-	json_get_vars type ssid enc key role
+	json_get_vars type ssid enc key role band
 	if [ "$type" = wifi ]; then
-		use_radio
+		use_radio "$band"
 		uplink=$ssid
 		uci -q delete wireless.dn_uplink
 		u set wireless.dn_uplink=wifi-iface
@@ -101,6 +109,48 @@ if has uplink; then
 			3) fail "no wan firewall zone" ;;
 			*) fail "could not set the uplink's firewall" ;;
 		esac
+	fi
+	json_select ..
+fi
+
+# The LTE modem (a board with a QMI modem, e.g. the GL-X750): upstream OpenWrt's netifd proto qmi (uqmi) on the
+# modem's control device. An internet uplink like any other, so the wan zone, which drops input; a lower priority
+# than a wired (metric 0) or Wi-Fi (20) uplink. The SIM PIN and APN password are written to uci, never reported.
+lte=""
+if has lte; then
+	json_get_vars apn pincode auth username password pdptype disabled
+	case "${auth:-none}" in none|pap|chap|both) ;; *) fail "unknown lte auth '$auth'" ;; esac
+	case "${pdptype:-ipv4v6}" in ipv4|ipv6|ipv4v6) ;; *) fail "unknown lte pdptype '$pdptype'" ;; esac
+	[ -z "$pincode" ] || echo "$pincode" | grep -qxE '[0-9]{4,8}' || fail "lte pincode is not 4 to 8 digits"
+	if [ ! -f /lib/netifd/proto/qmi.sh ]; then
+		# Settings for a modem this board doesn't have (sysupgrade refuses another board's image, so a site from
+		# an LTE router rarely meets one). Failing would keep the whole site from applying on every boot.
+		lte="skipped (no modem support in this image)"
+	else
+		uci -q delete network.lte
+		u set network.lte=interface
+		u set network.lte.proto=qmi
+		u set network.lte.device=/dev/cdc-wdm0
+		[ -n "$apn" ] && u set network.lte.apn="$apn"
+		[ -n "$pincode" ] && u set network.lte.pincode="$pincode"
+		if [ "${auth:-none}" != none ]; then
+			u set network.lte.auth="$auth"
+			[ -n "$username" ] && u set network.lte.username="$username"
+			[ -n "$password" ] && u set network.lte.password="$password"
+		fi
+		# qmi.sh's own name for IPv4 is "ip".
+		[ -n "$pdptype" ] && u set network.lte.pdptype="$([ "$pdptype" = ipv4 ] && echo ip || echo "$pdptype")"
+		u set network.lte.metric=30
+		[ "$disabled" = 1 ] && u set network.lte.disabled=1
+		# The one role -> firewall rule (dn-net's uplink.sh): wan, restricted. qmi.sh gives its lte_4/lte_6
+		# children this zone.
+		dn_uplink_zone wan lte
+		case $? in
+			0) ;;
+			3) fail "no wan firewall zone" ;;
+			*) fail "could not set the LTE uplink's firewall" ;;
+		esac
+		lte="apn:${apn:-default}$([ "$disabled" = 1 ] && echo ",disabled")"
 	fi
 	json_select ..
 fi
@@ -133,5 +183,5 @@ fi
 
 uci commit || fail "uci commit"
 rm -f "$SITE" /tmp/dn-handoff.shadow
-note "applied v1 lan=${lan_ip:-default} ap=${ap:-none} uplink=${uplink:-none} reservations=$n password=$([ -n "$rootHash" ] && echo carried || echo unchanged)"
+note "applied v1 lan=${lan_ip:-default} ap=${ap:-none} uplink=${uplink:-none} reservations=$n password=$([ -n "$rootHash" ] && echo carried || echo unchanged) lte=${lte:-none}"
 exit 0

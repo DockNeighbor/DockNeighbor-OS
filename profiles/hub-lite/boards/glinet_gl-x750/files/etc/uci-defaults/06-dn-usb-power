@@ -1,0 +1,11 @@
+#!/bin/sh
+# GL-X750: the USB port's power is switched by GPIO2, active low, and upstream OpenWrt leaves it off (the OpenWrt
+# wiki's GL-X750 page; GL.iNet's own firmware drives it low). The hub-lite's USB GPS needs it. Upstream's own
+# gpio_switch service applies it at every boot (the ath79 GPIO chip's base is 512 on 24.10's kernel 6.6, as in
+# upstream's 03_gpio_switches).
+uci -q get system.dn_usb_power >/dev/null && exit 0
+uci set system.dn_usb_power=gpio_switch
+uci set system.dn_usb_power.name='USB power'
+uci set system.dn_usb_power.gpio_pin=514
+uci set system.dn_usb_power.value=0
+uci commit system

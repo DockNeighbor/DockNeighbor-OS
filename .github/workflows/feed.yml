@@ -3,10 +3,12 @@ name: Feed
 # Publish the signed dn_os package feed (level 1 for DockNeighbor OS's own dn-* packages) when main changes a
 # package. Routers read it from the rolling `feed` release; nothing installs until a router is told to upgrade
 # (dn-pkg-upgrade). The PR's version guard means a changed package always carries a new version.
+# ONE feed for every board: each board's image build contributes its packages; the index lists an arch-independent
+# package once and a compiled one once per arch, and opkg on a router reads only its own archs.
 on:
   push:
     branches: [main]
-    paths: ['feed/**']
+    paths: ['feed/**', 'profiles/hub-lite/boards/**', 'scripts/publish-feed.sh']
   workflow_dispatch:
 
 concurrency:
@@ -14,12 +16,33 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  publish:
+  boards:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      list: ${{ steps.boards.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: boards
+        run: |
+          set -eu
+          root=$PWD; . scripts/hub-lite-board.sh
+          for b in $(hub_lite_boards); do hub_lite_load "$b"; done
+          echo "list=$(hub_lite_boards | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+
+  # The whole image build per board, so the packages published are exactly the ones an image passed its checks with.
+  build:
+    needs: boards
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        board: ${{ fromJSON(needs.boards.outputs.list) }}
+    name: build (${{ matrix.board }})
     steps:
       - uses: actions/checkout@v4
       - name: Build tools
@@ -27,16 +50,40 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: build/hub-lite/dl
-          key: hub-lite-dl-${{ hashFiles('profiles/hub-lite/upstream.env') }}
-      # The whole image build, so the packages published are exactly the ones an image passed its checks with.
+          key: hub-lite-dl-${{ matrix.board }}-${{ hashFiles('profiles/hub-lite/upstream.env', format('profiles/hub-lite/boards/{0}/board.env', matrix.board)) }}
       - name: Build
-        run: sh scripts/build-hub-lite.sh
-      - name: Sign the index
+        run: sh scripts/build-hub-lite.sh "${{ matrix.board }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dockneighbor-os-feed-${{ matrix.board }}
+          path: out/hub-lite/${{ matrix.board }}/feed/
+          if-no-files-found: error
+
+  publish:
+    needs: [boards, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends signify-openbsd
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dockneighbor-os-feed-*
+          path: dl
+      - name: Merge every board's packages and sign the index
         env:
           DN_OS_FEED_USIGN_KEY: ${{ secrets.DN_OS_FEED_USIGN_KEY }}
+          BOARDS: ${{ join(fromJSON(needs.boards.outputs.list), ' ') }}
         run: |
           set -eu
           [ -n "$DN_OS_FEED_USIGN_KEY" ] || { echo "::error::DN_OS_FEED_USIGN_KEY is not set"; exit 1; }
+          for b in $BOARDS; do
+            [ -d "dl/dockneighbor-os-feed-$b" ] || { echo "::error::no packages for board $b"; exit 1; }
+            mkdir -p "out/hub-lite/$b"; mv "dl/dockneighbor-os-feed-$b" "out/hub-lite/$b/feed"
+          done
           umask 077; d=$(mktemp -d); trap 'rm -rf "$d"' EXIT; k="$d/dn-os-feed.sec"
           printf '%s\n' "$DN_OS_FEED_USIGN_KEY" > "$k"
           sh scripts/publish-feed.sh "$k"

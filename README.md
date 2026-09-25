@@ -8,9 +8,14 @@ itself (the hub-lite, the full hub daemon, the `/api/hub/*` device contract) liv
 [DockNeighbor-Hub](https://github.com/DockNeighbor/DockNeighbor-Hub). Images are assembled only from its
 signed releases, pinned by version and hash, never copied in.
 
-| Profile | Hardware | Runs | Status |
+| Profile | Boards | Runs | Status |
 |---|---|---|---|
-| **hub-lite** | GL.iNet GL-MT300N-V2 | the hub-lite (POSIX shell, on the router) | first profile |
+| **hub-lite** | GL.iNet GL-MT300N-V2 (`ramips/mt76x8`), GL.iNet GL-X750 with LTE (`ath79/generic`) | the hub-lite (POSIX shell, on the router) | first profile |
+
+A **profile** is a role (hub-lite: the router runs the hub-lite); a **board** is the hardware it runs on. Each board of
+a profile is a directory, `profiles/<profile>/boards/<device>/`: its upstream pins (target, SDK, ImageBuilder and the
+plain upstream image, by sha256), board name, firmware partition size, extra packages and files, and its release
+channel.
 
 ## hub-lite
 
@@ -20,9 +25,13 @@ The image is upstream OpenWrt 24.10.8 for the board, plus:
 
 - **The hub-lite** (`brvg-hub-lite`), taken from the Hub's signed feed. The build verifies the feed's
   signature and the package hash before using it.
-- **dropbear with Ed25519.** Upstream builds this target as `small_flash`, which compiles Ed25519
-  out of dropbear, so an Ed25519 key is silently ignored there.
+- **dropbear with Ed25519.** Upstream builds `ramips/mt76x8` as `small_flash`, which compiles Ed25519
+  out of dropbear, so an Ed25519 key is silently ignored there. (Every board gets the same dropbear build.)
 - **`dn-handoff`**: carries the router's settings across the flash (below).
+- **On the GL-X750, its LTE modem**, the upstream OpenWrt way: QMI (`uqmi`, netifd `proto qmi` on
+  `/dev/cdc-wdm0`) with the modem's serial ports (`kmod-usb-serial-option`), USB GPS support (`kmod-usb-acm`), and
+  the USB port's power switched on at boot (GPIO2, which upstream leaves off). The modem's APN, PIN and
+  authentication come across the flash in the site file.
 - **No local web page**: the DockNeighbor apps are the interface. There's no LuCI, and the system
   uhttpd is disabled. The hub-lite runs its own uhttpd instance for its port-8722 door.
 
@@ -31,7 +40,7 @@ The image is upstream OpenWrt 24.10.8 for the board, plus:
 `handoff/` holds the flow the app runs over SSH on the vendor's stock firmware:
 
 1. A **reader** for that vendor (`handoff/read-glinet.sh`) reads the router's LAN address, access point,
-   uplink, DHCP reservations, admin password hash and SSH keys, and writes them as one brand-neutral
+   uplink, LTE modem settings, DHCP reservations, admin password hash and SSH keys, and writes them as one brand-neutral
    site file (`/etc/dn/site.json`, format in [`handoff/README.md`](handoff/README.md)) inside a
    sysupgrade config tarball. Secrets never leave the router.
 2. `sysupgrade -f /tmp/dn-handoff.tgz <image>` flashes the image and restores that tarball.
@@ -68,12 +77,15 @@ LAN), `wan` for an internet source such as marina Wi-Fi (restricted, the default
 | **2: OS** | the whole firmware | `dn-os-upgrade`: this repo's signed release channel (key `3420e953f030f5a8`) | settings, the hub-lite's config and member keys |
 
 The image is a known-good baseline for the kernel, drivers and base OS. Every package defined in `feed/` is also
-published to the `dn_os` feed (rolling release `feed`, on each merge to `main` that touches `feed/`), so a fix to
+published to the `dn_os` feed (rolling release `feed`, on each merge to `main` that touches `feed/`). One signed
+index serves every board: an arch-independent package is listed once, and a compiled one once per board arch
+(`mipsel_24kc`, `mips_24kc`), built by that board's SDK; opkg reads only the entries for its own arch. so a fix to
 one reaches routers without a new firmware. `dn-pkg-upgrade` upgrades only packages that feed carries, and
 restarts only the services they own. A PR that changes a package without bumping its version fails CI, because
 opkg would never deliver it. opkg refuses any index that fails its signature.
 
 `dn-os-upgrade check` reports `{current, available, upgrade, hubLite}`, and `dn-os-upgrade apply [--detach]` upgrades.
+Each board has its own channel manifest (`channel-hub-lite/<device>.json`, the URL in its `/etc/dn-release`).
 A router takes an OS release only when the manifest is signed by a key baked into its image, names its board
 and profile, and is **strictly newer** than what it runs, so a replayed older manifest can't downgrade it. The
 image must then match the manifest's sha256 and pass `sysupgrade -T`.
@@ -83,18 +95,20 @@ upgrade the router records its hub-lite version (`/etc/dn/hub-lite.min`), and af
 `dn-hub-lite-restore` reinstalls from the feed until it is back at that version or newer.
 
 **Releasing:** bump `DN_OS_VERSION` in `profiles/hub-lite/profile.env`, then push the tag
-`hub-lite-os-v<version>`. The release workflow builds, signs `manifest.json`, publishes the release, and
-then moves the rolling `channel-hub-lite` release to it.
+`hub-lite-os-v<version>`. The release workflow builds every board, signs one manifest per board (`<device>.json`),
+publishes the release, and then moves the rolling `channel-hub-lite` release to it.
 
 ## Building
 
 hub-lite needs x86-64 Linux with the OpenWrt ImageBuilder prerequisites (see the CI workflow):
 
 ```sh
-sh scripts/build-hub-lite.sh      # -> out/hub-lite/
+sh scripts/build-hub-lite.sh glinet_gl-x750    # -> out/hub-lite/glinet_gl-x750/
+sh scripts/build-hub-lite.sh                   # every board
 ```
 
-Every upstream download is pinned by sha256 in `profiles/hub-lite/upstream.env`. Those hashes come from
+Every upstream download is pinned by sha256, in `profiles/hub-lite/upstream.env` (shared) and each
+`profiles/hub-lite/boards/<device>/board.env`. Those hashes come from
 OpenWrt's `sha256sums` for the release, whose signature was verified against the 24.10 release key
 (`d310c6f2833e97f7`) when they were pinned.
 
