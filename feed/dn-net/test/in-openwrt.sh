@@ -187,6 +187,72 @@ eq "add: ...nothing staged" "$(staged)" 0
 r=$(net reservation-remove '{"mac":"aa:bb:cc:00:00:01"}'); eq "remove: gone" "$(j "$r" '@.reservations[*].mac' | wc -l | tr -d ' ')" "0"
 net reservation-remove '{"mac":"aa:bb:cc:00:00:01"}' >/dev/null; eq "remove: an unknown MAC is refused" "$?" 2
 
+echo "mode (router / bridge)"
+# The MT300N-V2's real layout: br-lan holds eth0.1, the WAN is eth0.2.
+cat > /etc/config/network <<'EOF'
+config interface 'loopback'
+	option device 'lo'
+	option proto 'static'
+	option ipaddr '127.0.0.1'
+	option netmask '255.0.0.0'
+config device
+	option name 'br-lan'
+	option type 'bridge'
+	list ports 'eth0.1'
+config interface 'lan'
+	option device 'br-lan'
+	option proto 'static'
+	option ipaddr '192.168.8.1'
+	option netmask '255.255.255.0'
+	option ip6assign '60'
+config interface 'wan'
+	option device 'eth0.2'
+	option proto 'dhcp'
+config interface 'wan6'
+	option device 'eth0.2'
+	option proto 'dhcpv6'
+config interface 'wwan'
+	option proto 'dhcp'
+	option metric '20'
+EOF
+uci set wireless.dn_uplink=wifi-iface; uci set wireless.dn_uplink.mode=sta; uci set wireless.dn_uplink.disabled=0; uci commit wireless
+uci -q delete dn-net.state; uci commit dn-net; rm -f /etc/dn/router-mode.tgz
+sums() { md5sum /etc/config/network /etc/config/dhcp /etc/config/wireless /etc/config/firewall | cut -d' ' -f1 | tr '\n' ' '; }
+before=$(sums)
+eq "mode-get: router by default" "$(j "$(net mode-get)" '@.mode')" "router"
+r=$(net mode-set '{"mode":"bridge"}'); eq "bridge: exit" "$?" 0
+eq "bridge: answers switching" "$(j "$r" '@.mode') $(j "$r" '@.status')" "bridge switching"
+eq "bridge: the WAN port joins the LAN bridge" "$(uci get network.@device[0].ports)" "eth0.1 eth0.2"
+eq "bridge: wan and wan6 are off" "$(uci get network.wan.auto) $(uci get network.wan6.auto)" "0 0"
+eq "bridge: the LAN takes the boat's address by DHCP" "$(uci get network.lan.proto) $(uci -q get network.lan.ipaddr || echo none)" "dhcp none"
+eq "bridge: no DHCP server, v4 or v6" "$(uci get dhcp.lan.ignore) $(uci get dhcp.lan.dhcpv6) $(uci get dhcp.lan.ra)" "1 disabled disabled"
+eq "bridge: the Wi-Fi uplink is switched off" "$(uci get wireless.dn_uplink.disabled)" "1"
+eq "bridge: the router-mode settings were saved" "$([ -s /etc/dn/router-mode.tgz ] && echo saved)" "saved"
+eq "mode-get: bridge" "$(j "$(net mode-get)" '@.mode')" "bridge"
+r=$(net mode-set '{"mode":"bridge"}'); eq "bridge again: a no-op, never a second port" "$(uci get network.@device[0].ports)" "eth0.1 eth0.2"
+r=$(net mode-set '{"mode":"router"}'); eq "router: exit" "$?" 0
+eq "router: every config back EXACTLY as it was" "$(sums)" "$before"
+eq "router: mode-get router" "$(j "$(net mode-get)" '@.mode')" "router"
+net mode-set '{"mode":"repeater"}' >/dev/null; eq "mode: an unknown mode is refused" "$?" 2
+eq "mode: ...nothing staged" "$(staged)" 0
+uci set dn-net.state=state; uci set dn-net.state.mode=bridge; uci commit dn-net; rm -f /etc/dn/router-mode.tgz
+net mode-set '{"mode":"router"}' >/dev/null; eq "router: with no saved settings it is refused, never guessed" "$?" 2
+uci set dn-net.state.mode=router; uci commit dn-net
+uci delete network.wan.device; uci commit network
+net mode-set '{"mode":"bridge"}' >/dev/null; eq "bridge: no WAN port to bridge is refused" "$?" 2
+eq "bridge: ...and the LAN is untouched" "$(uci get network.lan.proto)" "static"
+uci set network.wan.device=eth0.2; uci commit network
+before=$(sums)
+
+# mode-watch: an address from the boat keeps bridge mode; none in time reverts to router mode by itself.
+WATCH=/t/feed/dn-net/files/usr/libexec/dn-net/mode-watch
+net mode-set '{"mode":"bridge"}' >/dev/null
+echo '{"up":true,"ipv4-address":[{"address":"192.168.86.114","mask":24}]}' > /tmp/fx/if.lan
+DN_NET_WATCH_SECS=2 DN_NET_WATCH_STEP=1 sh "$WATCH"; eq "watch: an address from the boat keeps bridge mode" "$? $(j "$(net mode-get)" '@.mode')" "0 bridge"
+rm -f /tmp/fx/if.lan
+DN_NET_WATCH_SECS=2 DN_NET_WATCH_STEP=1 sh "$WATCH"; eq "watch: no address in time reverts" "$?" 1
+eq "watch: ...to router mode, every config exactly as before" "$(j "$(net mode-get)" '@.mode') $(sums)" "router $before"
+
 echo "misc"
 eq "reboot: answers first (nothing reboots in a test)" "$(j "$(net reboot)" '@.status')" "rebooting"
 net frobnicate >/dev/null; eq "an unknown verb is a bad request" "$?" 2

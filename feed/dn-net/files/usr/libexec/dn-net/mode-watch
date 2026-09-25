@@ -1,0 +1,19 @@
+#!/bin/sh
+# After a switch to bridge mode: the LAN must get an address from the boat's network within DN_NET_WATCH_SECS, or the
+# router puts itself back in router mode (at its old LAN address), so a wrong cable can never strand it.
+# Exit 0 = kept bridge mode, 1 = reverted.
+SECS=${DN_NET_WATCH_SECS:-180}; STEP=${DN_NET_WATCH_STEP:-10}; BAK=${DN_NET_MODE_BAK:-/etc/dn/router-mode.tgz}
+waited=0
+while [ "$waited" -lt "$SECS" ]; do
+	ifstatus lan 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null | grep -q . && {
+		logger -t dn-net "bridge mode: the LAN has an address from the boat's network; keeping it"; exit 0; }
+	sleep "$STEP"; waited=$((waited + STEP))
+done
+logger -t dn-net "bridge mode: no address from the boat's network in ${SECS}s; reverting to router mode"
+tar -xzf "$BAK" -C / || { logger -t dn-net "bridge mode: the saved router settings could not be restored"; exit 1; }
+uci set dn-net.state=state; uci set dn-net.state.mode=router; uci commit dn-net
+[ -n "${DN_NET_NO_APPLY:-}" ] || {
+	/etc/init.d/firewall enable; /etc/init.d/odhcpd enable
+	/etc/init.d/network restart; /etc/init.d/firewall restart; /etc/init.d/odhcpd restart; /etc/init.d/dnsmasq restart; wifi reload
+} >/dev/null 2>&1
+exit 1

@@ -7,7 +7,8 @@
 #   exit 0 ok | 2 bad request (reason on stderr) | 1 failed
 #
 # Verbs: wan, lan-get, lan-set, wifi-get, wifi-set, uplink-scan, uplink-get, uplink-join, uplink-disconnect,
-# uplink-saved, uplink-forget, clients, client-block, reservations, reservation-add, reservation-remove, reboot.
+# uplink-saved, uplink-forget, clients, client-block, reservations, reservation-add, reservation-remove, reboot,
+# mode-get, mode-set.
 #
 # A change that would cut the caller off (a LAN move, a Wi-Fi reload, a reboot) is applied AFTER the answer, in
 # the background. DN_NET_NO_APPLY=1 (tests) stages and commits but never reloads anything. DN_NET_REDACT=1 leaves
@@ -424,6 +425,66 @@ v_reservation_remove() {
 	v_reservations
 }
 
+# ---- mode: router, or bridge (owner, 2026-09-25: "disables the firewall and just bridges everything on the LAN")
+# bridge = OpenWrt's "dumb AP": the WAN port joins the LAN bridge, the router takes its address from the boat's
+# network by DHCP, and it runs no DHCP server, no NAT and no firewall; its access point extends the boat's network.
+# The router-mode settings are saved first and restored exactly by mode router; and if the bridge gets no address
+# within 3 minutes, mode-watch reverts by itself. A Wi-Fi client can't join a plain bridge, so the wired WAN is the
+# uplink in bridge mode and the Wi-Fi uplink is switched off.
+MODE_BAK=${DN_NET_MODE_BAK:-/etc/dn/router-mode.tgz}
+cur_mode() { m=$(uci -q get dn-net.state.mode); echo "${m:-router}"; }
+lan_bridge() { uci -q show network | sed -n "s/^network\.\([^.=]*\)\.name='br-lan'$/\1/p" | head -1; }
+
+v_mode_get() {
+	json_init
+	json_add_string mode "$(cur_mode)"
+	_ip=$(ifstatus lan 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)
+	[ -n "$_ip" ] && json_add_string ip "$_ip"
+	json_dump
+}
+
+v_mode_set() {
+	input
+	json_get_vars mode
+	case "$mode" in router|bridge) ;; *) bad "mode is router or bridge" ;; esac
+	[ "$mode" = "$(cur_mode)" ] && { v_mode_get; return; }
+	if [ "$mode" = bridge ]; then
+		_wd=$(uci -q get network.wan.device); _br=$(lan_bridge)
+		[ -n "$_wd" ] || bad "no WAN port to bridge"
+		[ -n "$_br" ] || bad "no LAN bridge (br-lan)"
+		# The exact router-mode settings, for mode router and for mode-watch's revert.
+		mkdir -p "$(dirname "$MODE_BAK")"
+		tar -czf "$MODE_BAK" -C / etc/config/network etc/config/dhcp etc/config/wireless etc/config/firewall 2>/dev/null ||
+			die "could not save the router-mode settings"
+		uci -q show "network.$_br.ports" | grep -q "'$_wd'" || u add_list "network.$_br.ports=$_wd"
+		u set network.wan.auto=0
+		uci -q get network.wan6 >/dev/null && u set network.wan6.auto=0
+		u set network.lan.proto=dhcp
+		for o in ipaddr netmask ip6assign; do uci -q delete "network.lan.$o"; done
+		u set dhcp.lan.ignore=1
+		u set dhcp.lan.dhcpv6=disabled
+		u set dhcp.lan.ra=disabled
+		[ "$(uci -q get wireless.dn_uplink)" = wifi-iface ] && u set wireless.dn_uplink.disabled=1
+		u set dn-net.state=state
+		u set dn-net.state.mode=bridge
+		commit network; commit dhcp; commit wireless; commit dn-net
+		later 2 sh -c '/etc/init.d/firewall stop; /etc/init.d/firewall disable; /etc/init.d/odhcpd stop; /etc/init.d/odhcpd disable
+			/etc/init.d/network restart; /etc/init.d/dnsmasq restart; wifi reload; /usr/libexec/dn-net/mode-watch'
+	else
+		[ -s "$MODE_BAK" ] || bad "no saved router-mode settings to go back to"
+		tar -xzf "$MODE_BAK" -C / 2>/dev/null || die "could not restore the router-mode settings"
+		u set dn-net.state=state
+		u set dn-net.state.mode=router
+		commit dn-net
+		later 2 sh -c '/etc/init.d/firewall enable; /etc/init.d/odhcpd enable
+			/etc/init.d/network restart; /etc/init.d/firewall restart; /etc/init.d/odhcpd restart; /etc/init.d/dnsmasq restart; wifi reload'
+	fi
+	json_init
+	json_add_string mode "$mode"
+	json_add_string status switching
+	json_dump
+}
+
 # ---- reboot --------------------------------------------------------------------------------------
 v_reboot() {
 	later 3 reboot
@@ -448,5 +509,7 @@ case "${1:-}" in
 	reservation-add) v_reservation_add ;;
 	reservation-remove) v_reservation_remove ;;
 	reboot) v_reboot ;;
+	mode-get) v_mode_get ;;
+	mode-set) v_mode_set ;;
 	*) bad "usage: dn-net <verb>" ;;
 esac
