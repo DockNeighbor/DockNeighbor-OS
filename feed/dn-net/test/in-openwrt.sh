@@ -284,7 +284,7 @@ eq "no dn-auth: a failure, never an unchecked change" "$? $(cmp -s /etc/shadow /
 
 echo "bridge via Wi-Fi (relayd)"
 uci set wireless.dn_uplink.ssid=Boatnet; uci commit wireless
-touch /tmp/relay.sh; export DN_NET_RELAY_PROTO=/tmp/relay.sh
+printf "#!/bin/sh\n" > /tmp/relayd; chmod 755 /tmp/relayd; export DN_NET_RELAYD=/tmp/relayd
 rm -f /tmp/fx/if.wwan /tmp/fx/if.lan
 before=$(sums)
 net mode-set '{"mode":"bridge","via":"wifi"}' >/dev/null; eq "wifi: an uplink with no address is refused" "$?" 2
@@ -294,7 +294,7 @@ net mode-set '{"mode":"bridge","via":"wifi"}' >/dev/null; eq "wifi: a boat netwo
 echo '{"up":true,"ipv4-address":[{"address":"192.168.0.57","mask":16}]}' > /tmp/fx/if.wwan
 net mode-set '{"mode":"bridge","via":"wifi"}' >/dev/null; eq "wifi: ...by the wider prefix too (a /16 around the LAN)" "$?" 2
 echo '{"up":true,"ipv4-address":[{"address":"192.168.86.40","mask":24}]}' > /tmp/fx/if.wwan
-DN_NET_RELAY_PROTO=/nonexistent net mode-set '{"mode":"bridge","via":"wifi"}' >/dev/null
+DN_NET_RELAYD=/nonexistent net mode-set '{"mode":"bridge","via":"wifi"}' >/dev/null
 eq "wifi: no relayd is a failure, and nothing changed" "$? $(sums)" "1 $before"
 uci set wireless.dn_uplink.disabled=1; uci commit wireless
 net mode-set '{"mode":"bridge","via":"wifi"}' >/dev/null; eq "wifi: a switched-off uplink is refused" "$?" 2

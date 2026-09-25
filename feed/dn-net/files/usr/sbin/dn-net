@@ -448,7 +448,8 @@ v_reservation_remove() {
 MODE_BAK=${DN_NET_MODE_BAK:-/etc/dn/router-mode.tgz}
 cur_mode() { m=$(uci -q get dn-net.state.mode); echo "${m:-router}"; }
 cur_via() { v=$(uci -q get dn-net.state.via); echo "${v:-wired}"; }
-RELAY_PROTO=${DN_NET_RELAY_PROTO:-/lib/netifd/proto/relay.sh}
+# relayd is a procd service in 24.10 (/etc/init.d/relayd), reading every interface with proto relay.
+RELAYD=${DN_NET_RELAYD:-/usr/sbin/relayd}
 if_addr() { ifstatus "$1" 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null; }
 if_mask() { ifstatus "$1" 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].mask' 2>/dev/null; }
 mask2len() { echo "$1" | awk -F. '{ n = 0; for (i = 1; i <= 4; i++) { v = $i; while (v > 0) { n += v % 2; v = int(v / 2) } } print n }'; }
@@ -498,7 +499,7 @@ v_mode_set() {
 			_la=$(uci -q get network.lan.ipaddr); _lm=$(mask2len "$(uci -q get network.lan.netmask || echo 255.255.255.0)")
 			[ -n "$_la" ] && overlap "$_wa" "$_wm" "$_la" "$_lm" &&
 				bad "the LAN ($_la/$_lm) overlaps the boat's network ($_wa/$_wm): move the LAN first"
-			[ -f "$RELAY_PROTO" ] || die "this router has no relayd, which bridging over Wi-Fi needs"
+			[ -x "$RELAYD" ] || die "this router has no relayd, which bridging over Wi-Fi needs"
 		fi
 		# The exact router-mode settings, for mode router and for mode-watch's revert.
 		mkdir -p "$(dirname "$MODE_BAK")"
@@ -526,7 +527,8 @@ v_mode_set() {
 		u set dn-net.state.via="$via"
 		commit network; commit dhcp; commit wireless; commit dn-net
 		later 2 sh -c '/etc/init.d/firewall stop; /etc/init.d/firewall disable; /etc/init.d/odhcpd stop; /etc/init.d/odhcpd disable
-			/etc/init.d/network restart; /etc/init.d/dnsmasq restart; wifi reload; /usr/libexec/dn-net/mode-watch'
+			/etc/init.d/network restart; /etc/init.d/dnsmasq restart; wifi reload
+			[ -x /etc/init.d/relayd ] && { /etc/init.d/relayd enable; /etc/init.d/relayd restart; }; /usr/libexec/dn-net/mode-watch'
 	else
 		[ -s "$MODE_BAK" ] || bad "no saved router-mode settings to go back to"
 		tar -xzf "$MODE_BAK" -C / 2>/dev/null || die "could not restore the router-mode settings"
