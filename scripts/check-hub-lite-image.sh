@@ -45,11 +45,12 @@ grep -q '^DN_OS_PROFILE=hub-lite$' "$r/etc/dn-release" 2>/dev/null && ok "dn-rel
 grep -q '^option check_signature' "$r/etc/opkg.conf" 2>/dev/null && ok "opkg checks feed signatures (level 1)" || bad "opkg does not check signatures"
 # Level 2 (the whole OS): the upgrader, the release key, the channel, and what must survive it.
 [ -x "$r/usr/sbin/dn-os-upgrade" ] && ok "dn-os-upgrade present (level 2)" || bad "dn-os-upgrade missing"
+[ -x "$r/usr/libexec/dn-auth/verify-root" ] && ok "admin password check present (dn-auth)" || bad "dn-auth verify-root missing"
 [ -x "$r/usr/libexec/dn-net/mode-watch" ] && ok "bridge mode's self-revert watchdog present" || bad "dn-net mode-watch missing"
 grep -q '^net.ipv4.conf.all.arp_ignore=1' "$r/etc/sysctl.d/90-dn-net.conf" 2>/dev/null && ok "no ARP flux between two uplinks on one network" || bad "arp_ignore not set"
 [ -x "$r/usr/sbin/dn-pkg-upgrade" ] && [ -x "$r/etc/uci-defaults/94-dn-os-feed" ] && ok "dn-pkg-upgrade + dn_os feed setup (level 1, dn-* packages)" || bad "dn-pkg-upgrade or 94-dn-os-feed missing"
 # Every dn-* package is a real package (so the dn_os feed can upgrade it), not loose image files.
-for p in dn-handoff dn-os-upgrade dn-hub-lite-os dn-net; do
+for p in dn-handoff dn-os-upgrade dn-hub-lite-os dn-net dn-auth; do
   [ -f "$r/usr/lib/opkg/info/$p.control" ] && ok "package installed: $p" || bad "not installed as a package: $p"
 done
 [ -f "$r/etc/dn/os-keys/3420e953f030f5a8" ] && ok "OS release key 3420e953f030f5a8" || bad "OS release key missing"

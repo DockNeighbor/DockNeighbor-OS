@@ -42,6 +42,8 @@ jobs:
         run: sh feed/dn-os-upgrade/test/upgrade.test.sh
       - name: Package upgrader (level 1, dn-* packages), on real OpenWrt userland
         run: sh feed/dn-os-upgrade/test/pkg-upgrade.test.sh
+      - name: dn-auth (the root password check), against musl's crypt
+        run: sh feed/dn-auth/test/auth.test.sh
       - name: dn-net (the DN device API's OS half), on real OpenWrt userland
         run: sh feed/dn-net/test/net.test.sh
       - name: Every changed package bumps its version (else routers never receive it)
