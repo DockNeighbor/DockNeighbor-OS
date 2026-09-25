@@ -1,25 +1,25 @@
 #!/bin/sh
 # Prove the finished hub-lite image has every guarantee the profile promises, by opening the image itself
 # (not the build's config). Fails on the first missing one.
-#   usage: scripts/check-hub-lite-image.sh <sysupgrade.bin>
+#   usage: scripts/check-hub-lite-image.sh <sysupgrade.bin> <device>     (a board in profiles/hub-lite/boards/)
 # Run against plain upstream OpenWrt for the same board, it must FAIL — that's how we know it can.
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
-. "$root/profiles/hub-lite/profile.env"
-img=$1
+. "$root/scripts/hub-lite-board.sh"
+img=${1:-}; hub_lite_load "${2:-}"
 [ -f "$img" ] || { echo "check: no image $img" >&2; exit 1; }
 fails=0
 ok() { echo "  ok    $*"; }
 bad() { echo "  FAIL  $*"; fails=$((fails + 1)); }
 
-echo "check-hub-lite-image: $(basename "$img")"
+echo "check-hub-lite-image: $(basename "$img") ($BOARD_TITLE)"
 
 # The vendor's sysupgrade accepts only an image whose metadata names its board.
 meta=$(strings -n 16 "$img" | grep '"supported_devices"' | tail -1)
 case "$meta" in *"\"$BOARD\""*) ok "metadata lists $BOARD" ;; *) bad "metadata does not list $BOARD" ;; esac
 
-# Firmware partition of the board: 0xf90000 (/proc/mtd on the device, 2026-09-24).
-size=$(wc -c < "$img"); max=$((0xf90000))
+# The board's firmware partition (FIRMWARE_SIZE in its board.env).
+size=$(wc -c < "$img"); max=$((FIRMWARE_SIZE))
 [ "$size" -le "$max" ] && ok "size $size <= $max" || bad "size $size > firmware partition $max"
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
@@ -41,6 +41,7 @@ ls "$r"/etc/rc.d/S*brvg-hub-lite >/dev/null 2>&1 && ok "hub-lite enabled at boot
 [ -x "$r/usr/libexec/dn-handoff/apply" ] && [ -x "$r/etc/uci-defaults/05-dn-handoff" ] && ok "dn-handoff renderer present" || bad "dn-handoff missing"
 [ -x "$r/etc/uci-defaults/95-dn-hub-lite" ] && ok "hub-lite feed setup at first boot" || bad "95-dn-hub-lite missing"
 grep -q '^DN_OS_PROFILE=hub-lite$' "$r/etc/dn-release" 2>/dev/null && ok "dn-release: $(grep DN_OS_VERSION "$r/etc/dn-release")" || bad "no /etc/dn-release"
+grep -q "^DN_OS_UPSTREAM=\"OpenWrt $OPENWRT_VERSION $OPENWRT_TARGET\"\$" "$r/etc/dn-release" 2>/dev/null && ok "dn-release: OpenWrt $OPENWRT_VERSION $OPENWRT_TARGET" || bad "dn-release does not name OpenWrt $OPENWRT_VERSION $OPENWRT_TARGET"
 # Level 1 (the hub-lite package from its feed) is only safe if opkg refuses unsigned indexes.
 grep -q '^option check_signature' "$r/etc/opkg.conf" 2>/dev/null && ok "opkg checks feed signatures (level 1)" || bad "opkg does not check signatures"
 # Level 2 (the whole OS): the upgrader, the release key, the channel, and what must survive it.
@@ -55,7 +56,9 @@ for p in dn-handoff dn-os-upgrade dn-hub-lite-os dn-net dn-auth; do
   [ -f "$r/usr/lib/opkg/info/$p.control" ] && ok "package installed: $p" || bad "not installed as a package: $p"
 done
 [ -f "$r/etc/dn/os-keys/3420e953f030f5a8" ] && ok "OS release key 3420e953f030f5a8" || bad "OS release key missing"
-grep -q '^DN_OS_CHANNEL_URL=https://' "$r/etc/dn-release" 2>/dev/null && ok "OS channel set" || bad "no DN_OS_CHANNEL_URL"
+# This board's own channel manifest: a router takes only a manifest naming its board, so another board's channel
+# would leave it without OS upgrades.
+grep -qxF "DN_OS_CHANNEL_URL=$DN_OS_CHANNEL_URL" "$r/etc/dn-release" 2>/dev/null && ok "OS channel: $(basename "$DN_OS_CHANNEL_URL")" || bad "DN_OS_CHANNEL_URL is not this board's channel ($DN_OS_CHANNEL_URL)"
 kept=$(sed '/^#/d' "$r"/lib/upgrade/keep.d/* 2>/dev/null)
 for f in /etc/brvg-hub-lite.conf /etc/brvg-hub-lite.keys /etc/dn/hub-lite.min; do
   echo "$kept" | grep -qxF "$f" && ok "kept across OS upgrades: $f" || bad "not kept across OS upgrades: $f"
@@ -69,6 +72,25 @@ ls "$r"/etc/rc.d/S*uhttpd >/dev/null 2>&1 && bad "system uhttpd enabled" || ok "
 # OpenWrt's 24.10 release key + the dn_os feed key. The hub-lite key arrives via feed-setup at first boot.
 keys=$(ls "$r/etc/opkg/keys" 2>/dev/null | tr '\n' ' ')
 [ "$keys" = "1c44072d07e3e228 d310c6f2833e97f7 " ] && ok "opkg keys: $keys" || bad "unexpected opkg keys: '${keys}' (a local build key?)"
+
+# What this board adds: its packages (e.g. the X750's LTE modem stack) and its own files.
+for p in $BOARD_PACKAGES; do
+  [ -f "$r/usr/lib/opkg/info/$p.control" ] && ok "board package: $p" || bad "board package missing: $p"
+done
+if [ -d "$prof/boards/$DEVICE/files" ]; then
+  for f in $(cd "$prof/boards/$DEVICE/files" && find . -type f | sed 's|^\.||' | sort); do
+    cmp -s "$prof/boards/$DEVICE/files$f" "$r$f" && ok "board file: $f" || bad "board file missing or different: $f"
+  done
+fi
+# A board with a QMI modem: netifd's qmi protocol, the modem's drivers, and a dn-handoff that renders the site's LTE.
+case " $BOARD_PACKAGES " in *" uqmi "*)
+  [ -x "$r/sbin/uqmi" ] && [ -f "$r/lib/netifd/proto/qmi.sh" ] && ok "LTE: uqmi + netifd proto qmi" || bad "LTE: uqmi or proto qmi missing"
+  for m in qmi_wwan option cdc-wdm; do
+    ls "$r"/lib/modules/*/"$m.ko" >/dev/null 2>&1 && ok "LTE: kernel module $m" || bad "LTE: kernel module $m missing"
+  done
+  grep -q 'proto=qmi' "$r/usr/libexec/dn-handoff/apply" 2>/dev/null && ok "LTE: dn-handoff carries the modem's settings" || bad "LTE: dn-handoff cannot render an lte site"
+  ;;
+esac
 
 [ "$fails" -eq 0 ] || { echo "check: $fails failure(s)"; exit 1; }
 echo "check: all guarantees hold"

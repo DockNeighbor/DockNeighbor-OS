@@ -18,6 +18,8 @@ jobs:
   tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      boards: ${{ steps.boards.outputs.list }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,11 +35,23 @@ jobs:
                    feed/dn-hub-lite-os/files/etc/uci-defaults/95-dn-hub-lite \
                    feed/dn-net/files/usr/sbin/dn-net feed/dn-net/files/usr/lib/dn-net/uplink.sh \
                    scripts/release-manifest.sh scripts/publish-feed.sh scripts/check-feed-versions.sh \
-                   scripts/build-hub-lite.sh scripts/check-hub-lite-image.sh; do
+                   scripts/build-hub-lite.sh scripts/check-hub-lite-image.sh scripts/hub-lite-board.sh \
+                   profiles/hub-lite/boards/*/files/etc/uci-defaults/*; do
             sh -n "$f"
           done
+      # Every board of the hub-lite profile loads and is consistent (its channel is channel-hub-lite/<device>.json,
+      # its OpenWrt is the profile's); the image jobs below build each one.
+      - name: hub-lite boards
+        id: boards
+        run: |
+          set -eu
+          root=$PWD; . scripts/hub-lite-board.sh
+          for b in $(hub_lite_boards); do (hub_lite_load "$b" && echo "$b: $BOARD_TITLE, OpenWrt $OPENWRT_VERSION $OPENWRT_TARGET, $PKG_ARCH"); done
+          echo "list=$(hub_lite_boards | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
       - name: Handoff renderer, on real OpenWrt userland
         run: sh handoff/test/apply.test.sh
+      - name: Handoff reader (GL.iNet 4.x) then renderer, end to end, on real OpenWrt userland
+        run: sh handoff/test/read.test.sh
       - name: OS upgrader (level 2), on real OpenWrt userland
         run: sh feed/dn-os-upgrade/test/upgrade.test.sh
       - name: Package upgrader (level 1, dn-* packages), on real OpenWrt userland
@@ -54,6 +68,11 @@ jobs:
     needs: tests
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        board: ${{ fromJSON(needs.tests.outputs.boards) }}
+    name: hub-lite (${{ matrix.board }})
     steps:
       - uses: actions/checkout@v4
       - name: Build tools
@@ -62,31 +81,52 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: build/hub-lite/dl
-          key: hub-lite-dl-${{ hashFiles('profiles/hub-lite/upstream.env') }}
+          key: hub-lite-dl-${{ matrix.board }}-${{ hashFiles('profiles/hub-lite/upstream.env', format('profiles/hub-lite/boards/{0}/board.env', matrix.board)) }}
       - name: Build the hub-lite image
-        run: sh scripts/build-hub-lite.sh
-      - name: The image check can fail (plain upstream OpenWrt must not pass it)
+        run: sh scripts/build-hub-lite.sh "${{ matrix.board }}"
+      - name: The image check can fail (plain upstream OpenWrt for this board must not pass it)
         run: |
           set -eu
-          . profiles/hub-lite/upstream.env
+          root=$PWD; . scripts/hub-lite-board.sh; hub_lite_load "${{ matrix.board }}"
           f=build/hub-lite/dl/$UPSTREAM_IMAGE_FILE
           [ -f "$f" ] || curl -fsSL -o "$f" "$OPENWRT_BASE/$UPSTREAM_IMAGE_FILE"
           echo "$UPSTREAM_IMAGE_SHA256  $f" | sha256sum -c --status
-          if sh scripts/check-hub-lite-image.sh "$f"; then echo "::error::the image check passed plain upstream OpenWrt"; exit 1; fi
+          if sh scripts/check-hub-lite-image.sh "$f" "${{ matrix.board }}"; then echo "::error::the image check passed plain upstream OpenWrt"; exit 1; fi
       # The release's signing path, on every PR, with a throwaway key (the real one is only in release.yml).
       - name: Release manifest (dry run, throwaway key)
         run: |
           set -eu
           d=$(mktemp -d); signify-openbsd -G -n -p "$d/t.pub" -s "$d/t.sec"
-          DN_OS_VERIFY_PUB="$d/t.pub" sh scripts/release-manifest.sh hub-lite-os-v0.0.0-dryrun "$d/t.sec"
-          rm -f out/hub-lite/manifest.json out/hub-lite/manifest.json.sig
+          DN_OS_VERIFY_PUB="$d/t.pub" sh scripts/release-manifest.sh hub-lite-os-v0.0.0-dryrun "$d/t.sec" "${{ matrix.board }}"
+          rm -f out/hub-lite/${{ matrix.board }}/manifest.json out/hub-lite/${{ matrix.board }}/manifest.json.sig
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dockneighbor-os-hub-lite-${{ matrix.board }}
+          path: out/hub-lite/${{ matrix.board }}/
+          if-no-files-found: error
+
+  # ONE dn_os feed for every board: the arch-independent packages once, each compiled one per arch.
+  feed:
+    needs: hub-lite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get update -q && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends signify-openbsd
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dockneighbor-os-hub-lite-*
+          path: dl
       - name: dn_os feed index (dry run, throwaway key)
         run: |
           set -eu
+          mkdir -p out/hub-lite
+          for d in dl/dockneighbor-os-hub-lite-*; do mv "$d" "out/hub-lite/${d#dl/dockneighbor-os-hub-lite-}"; done
           d=$(mktemp -d); signify-openbsd -G -n -p "$d/t.pub" -s "$d/t.sec"
           sh scripts/publish-feed.sh "$d/t.sec" "$d/t.pub"
       - uses: actions/upload-artifact@v4
         with:
-          name: dockneighbor-os-hub-lite-${{ github.sha }}
-          path: out/hub-lite/
+          name: dockneighbor-os-feed
+          path: out/hub-lite/feed/
           if-no-files-found: error

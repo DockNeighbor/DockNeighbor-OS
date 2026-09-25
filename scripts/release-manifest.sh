@@ -1,15 +1,16 @@
 #!/bin/sh
-# Write and sign out/hub-lite/manifest.json for a release: what dn-os-upgrade on a router trusts.
-#   usage: scripts/release-manifest.sh <tag> <secret key file, named *.sec>
+# Write and sign out/hub-lite/<device>/manifest.json for a release: what dn-os-upgrade on a router of that board
+# trusts. The release workflow publishes it as channel-hub-lite/<device>.json, the URL baked into that board's image.
+#   usage: scripts/release-manifest.sh <tag> <secret key file, named *.sec> <device>
 # DN_OS_VERIFY_PUB overrides the public key it verifies against (CI's dry run signs with a throwaway key).
 # The manifest names the image by its release URL, sha256 and size; the signature covers all of it.
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
-. "$root/profiles/hub-lite/profile.env"
-. "$root/profiles/hub-lite/upstream.env"
-tag=$1; key=$2; out="$root/out/hub-lite"
-img=$(ls "$out"/*-squashfs-sysupgrade.bin)
-[ "$(echo "$img" | wc -l)" -eq 1 ] || { echo "release: expected exactly one image in $out" >&2; exit 1; }
+. "$root/scripts/hub-lite-board.sh"
+tag=$1; key=$2; hub_lite_load "${3:-}"
+out="$root/out/hub-lite/$DEVICE"
+img=$(ls "$out"/*-"$DEVICE"-squashfs-sysupgrade.bin)
+[ "$(echo "$img" | wc -l)" -eq 1 ] || { echo "release: expected exactly one $DEVICE image in $out" >&2; exit 1; }
 name=$(basename "$img")
 python3 - "$out/manifest.json" <<EOF
 import json, sys
