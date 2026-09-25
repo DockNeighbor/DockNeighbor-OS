@@ -4,7 +4,7 @@ include $(TOPDIR)/rules.mk
 # brand-neutral /etc/dn/site.json into the sysupgrade config tarball; on first boot this package turns
 # it into this firmware's own config: LAN address, access point, uplink, reservations, admin password.
 PKG_NAME:=dn-handoff
-PKG_VERSION:=1.2.0
+PKG_VERSION:=1.3.0
 PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=SC4 Technologies
@@ -15,7 +15,7 @@ define Package/dn-handoff
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=DockNeighbor site handoff (settings survive a vendor-to-DockNeighbor flash)
-  DEPENDS:=+jshn
+  DEPENDS:=+jshn +dn-net
   PKGARCH:=all
 endef
 
