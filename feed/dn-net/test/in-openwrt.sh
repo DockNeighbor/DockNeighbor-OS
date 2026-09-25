@@ -222,7 +222,7 @@ sums() { md5sum /etc/config/network /etc/config/dhcp /etc/config/wireless /etc/c
 before=$(sums)
 eq "mode-get: router by default" "$(j "$(net mode-get)" '@.mode')" "router"
 r=$(net mode-set '{"mode":"bridge"}'); eq "bridge: exit" "$?" 0
-eq "bridge: answers switching" "$(j "$r" '@.mode') $(j "$r" '@.status')" "bridge switching"
+eq "bridge: answers switching, via wired by default" "$(j "$r" '@.mode') $(j "$r" '@.via') $(j "$r" '@.status')" "bridge wired switching"
 eq "bridge: the WAN port joins the LAN bridge" "$(uci get network.@device[0].ports)" "eth0.1 eth0.2"
 eq "bridge: wan and wan6 are off" "$(uci get network.wan.auto) $(uci get network.wan6.auto)" "0 0"
 eq "bridge: the LAN takes the boat's address by DHCP" "$(uci get network.lan.proto) $(uci -q get network.lan.ipaddr || echo none)" "dhcp none"
@@ -281,6 +281,46 @@ eq "...and it reads back" "$(vr "$(head -c 128 /dev/zero | tr '\0' b)")" 0
 cp /etc/shadow /tmp/shadow.before
 DN_NET_VERIFY_ROOT=/nonexistent net admin-password '{"current":"","next":"y2345678"}' >/dev/null
 eq "no dn-auth: a failure, never an unchecked change" "$? $(cmp -s /etc/shadow /tmp/shadow.before && echo same)" "1 same"
+
+echo "bridge via Wi-Fi (relayd)"
+uci set wireless.dn_uplink.ssid=Boatnet; uci commit wireless
+touch /tmp/relay.sh; export DN_NET_RELAY_PROTO=/tmp/relay.sh
+rm -f /tmp/fx/if.wwan /tmp/fx/if.lan
+before=$(sums)
+net mode-set '{"mode":"bridge","via":"wifi"}' >/dev/null; eq "wifi: an uplink with no address is refused" "$?" 2
+eq "wifi: ...nothing staged, nothing changed" "$(staged) $(sums)" "0 $before"
+echo '{"up":true,"ipv4-address":[{"address":"192.168.8.57","mask":24}]}' > /tmp/fx/if.wwan
+net mode-set '{"mode":"bridge","via":"wifi"}' >/dev/null; eq "wifi: a boat network overlapping the LAN is refused" "$? $(grep -c overlaps /tmp/err)" "2 1"
+echo '{"up":true,"ipv4-address":[{"address":"192.168.0.57","mask":16}]}' > /tmp/fx/if.wwan
+net mode-set '{"mode":"bridge","via":"wifi"}' >/dev/null; eq "wifi: ...by the wider prefix too (a /16 around the LAN)" "$?" 2
+echo '{"up":true,"ipv4-address":[{"address":"192.168.86.40","mask":24}]}' > /tmp/fx/if.wwan
+DN_NET_RELAY_PROTO=/nonexistent net mode-set '{"mode":"bridge","via":"wifi"}' >/dev/null
+eq "wifi: no relayd is a failure, and nothing changed" "$? $(sums)" "1 $before"
+uci set wireless.dn_uplink.disabled=1; uci commit wireless
+net mode-set '{"mode":"bridge","via":"wifi"}' >/dev/null; eq "wifi: a switched-off uplink is refused" "$?" 2
+uci set wireless.dn_uplink.disabled=0; uci commit wireless; before=$(sums)
+net mode-set '{"mode":"bridge","via":"banana"}' >/dev/null; eq "bridge: an unknown via is refused" "$?" 2
+r=$(net mode-set '{"mode":"bridge","via":"wifi"}'); eq "wifi: exit" "$?" 0
+eq "wifi: answers bridge via wifi" "$(j "$r" '@.mode') $(j "$r" '@.via') $(j "$r" '@.status')" "bridge wifi switching"
+eq "wifi: relayd joins the LAN and the Wi-Fi uplink" "$(uci get network.dn_relay.proto) $(uci get network.dn_relay.network)" "relay lan wwan"
+eq "wifi: the LAN keeps its own static address" "$(uci get network.lan.proto) $(uci get network.lan.ipaddr)" "static 192.168.8.1"
+eq "wifi: the WAN port is NOT bridged" "$(uci get network.@device[0].ports)" "eth0.1"
+eq "wifi: ...it is off (no firewall, so it must face nothing)" "$(uci get network.wan.auto) $(uci get network.wan6.auto)" "0 0"
+eq "wifi: no DHCP server, v4 or v6 (the boat's DHCP is relayed)" "$(uci get dhcp.lan.ignore) $(uci get dhcp.lan.dhcpv6) $(uci get dhcp.lan.ra)" "1 disabled disabled"
+eq "wifi: the Wi-Fi uplink stays on" "$(uci get wireless.dn_uplink.disabled)" "0"
+r=$(net mode-get); eq "mode-get: bridge via wifi, at its address on the boat's network" "$(j "$r" '@.mode') $(j "$r" '@.via') $(j "$r" '@.ip')" "bridge wifi 192.168.86.40"
+net mode-set '{"mode":"bridge","via":"wired"}' >/dev/null; eq "wifi -> wired directly is refused (through router mode)" "$? $(uci get network.@device[0].ports)" "2 eth0.1"
+net mode-set '{"mode":"bridge","via":"wifi"}' >/dev/null; eq "wifi again: a no-op, never a second relay member" "$? $(uci get network.dn_relay.network)" "0 lan wwan"
+r=$(net mode-set '{"mode":"router"}'); eq "router: exit" "$?" 0
+eq "router: every config back EXACTLY as it was" "$(sums)" "$before"
+eq "router: no via left behind" "$(uci -q get dn-net.state.via || echo none) $(j "$(net mode-get)" '@.via')" "none "
+# mode-watch over Wi-Fi watches the Wi-Fi uplink, not the LAN: a LAN address must NOT keep it.
+net mode-set '{"mode":"bridge","via":"wifi"}' >/dev/null
+DN_NET_WATCH_SECS=2 DN_NET_WATCH_STEP=1 sh "$WATCH"; eq "watch wifi: an address on the Wi-Fi uplink keeps it" "$? $(j "$(net mode-get)" '@.via')" "0 wifi"
+rm -f /tmp/fx/if.wwan; echo '{"up":true,"ipv4-address":[{"address":"192.168.8.1","mask":24}]}' > /tmp/fx/if.lan
+DN_NET_WATCH_SECS=2 DN_NET_WATCH_STEP=1 sh "$WATCH"; eq "watch wifi: none there reverts, whatever the LAN has" "$?" 1
+eq "watch wifi: ...to router mode, every config exactly as before, no via left" "$(j "$(net mode-get)" '@.mode') $(sums)$(uci -q get dn-net.state.via)" "router $before"
+rm -f /tmp/fx/if.lan
 
 echo "misc"
 eq "reboot: answers first (nothing reboots in a test)" "$(j "$(net reboot)" '@.status')" "rebooting"

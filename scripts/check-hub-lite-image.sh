@@ -46,6 +46,7 @@ grep -q '^option check_signature' "$r/etc/opkg.conf" 2>/dev/null && ok "opkg che
 # Level 2 (the whole OS): the upgrader, the release key, the channel, and what must survive it.
 [ -x "$r/usr/sbin/dn-os-upgrade" ] && ok "dn-os-upgrade present (level 2)" || bad "dn-os-upgrade missing"
 [ -x "$r/usr/libexec/dn-auth/verify-root" ] && ok "admin password check present (dn-auth)" || bad "dn-auth verify-root missing"
+[ -f "$r/lib/netifd/proto/relay.sh" ] && ok "relayd present (bridge mode over Wi-Fi)" || bad "relayd missing"
 [ -x "$r/usr/libexec/dn-net/mode-watch" ] && ok "bridge mode's self-revert watchdog present" || bad "dn-net mode-watch missing"
 grep -q '^net.ipv4.conf.all.arp_ignore=1' "$r/etc/sysctl.d/90-dn-net.conf" 2>/dev/null && ok "no ARP flux between two uplinks on one network" || bad "arp_ignore not set"
 [ -x "$r/usr/sbin/dn-pkg-upgrade" ] && [ -x "$r/etc/uci-defaults/94-dn-os-feed" ] && ok "dn-pkg-upgrade + dn_os feed setup (level 1, dn-* packages)" || bad "dn-pkg-upgrade or 94-dn-os-feed missing"
