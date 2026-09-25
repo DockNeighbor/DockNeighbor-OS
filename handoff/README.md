@@ -42,7 +42,7 @@ vendor firmware                           DockNeighbor OS, first boot
 |---|---|
 | `lan` | The boat's devices and their webhooks point at the router's address (Shellys report to it). |
 | `ap` | The boat's devices are joined to this Wi-Fi. |
-| `uplink` | The router must get back online by itself. The access-point BSSID is **not** carried: pinning one breaks on a mesh or at a new berth. |
+| `uplink` | The router must get back online by itself. The access-point BSSID is **not** carried: pinning one breaks on a mesh or at a new berth. A Wi-Fi uplink goes in its own `uplink` firewall zone that **accepts input like LAN** (the boat network's devices reach 8722/8181/22) and still NATs the router's own AP clients. |
 | `reservations` | Fixed addresses the hub-lite reaches devices at. |
 | `rootHash` | The owner's admin password keeps working. It's a crypt hash, never the password. |
 | `country` | Legal Wi-Fi channels. |

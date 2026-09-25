@@ -91,10 +91,25 @@ if has uplink; then
 		u set network.wwan=interface
 		u set network.wwan.proto=dhcp
 		u set network.wwan.metric=20
+		# Owner, 2026-09-25: "wifi as a client should be a LAN device, it needs multiple ports to be open". On a
+		# Wi-Fi uplink the router is a device ON the boat's network, and that network's Shellys and apps must
+		# reach its doors (8722, 8181, 22). So the uplink gets its own zone that ACCEPTS input like LAN, but
+		# still NATs the router's own access-point clients out (lan -> uplink), which the lan zone itself would
+		# not. Never the wan zone, which drops input.
 		z=$(uci -q show firewall | sed -n "s/^firewall\.\(@zone\[[0-9]*\]\)\.name='wan'$/\1/p")
-		[ -n "$z" ] || fail "no wan firewall zone"
-		uci -q del_list firewall.$z.network=wwan
-		u add_list firewall.$z.network=wwan
+		[ -n "$z" ] && uci -q del_list firewall.$z.network=wwan
+		u set firewall.dn_uplink=zone
+		u set firewall.dn_uplink.name=uplink
+		uci -q del_list firewall.dn_uplink.network=wwan
+		u add_list firewall.dn_uplink.network=wwan
+		u set firewall.dn_uplink.input=ACCEPT
+		u set firewall.dn_uplink.output=ACCEPT
+		u set firewall.dn_uplink.forward=REJECT
+		u set firewall.dn_uplink.masq=1
+		u set firewall.dn_uplink.mtu_fix=1
+		u set firewall.dn_uplink_fwd=forwarding
+		u set firewall.dn_uplink_fwd.src=lan
+		u set firewall.dn_uplink_fwd.dest=uplink
 	fi
 	json_select ..
 fi
