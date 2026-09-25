@@ -1,6 +1,7 @@
 #!/bin/sh
 # Write and sign out/hub-lite/manifest.json for a release: what dn-os-upgrade on a router trusts.
-#   usage: scripts/release-manifest.sh <tag> <signify/usign secret key file>
+#   usage: scripts/release-manifest.sh <tag> <secret key file, named *.sec>
+# DN_OS_VERIFY_PUB overrides the public key it verifies against (CI's dry run signs with a throwaway key).
 # The manifest names the image by its release URL, sha256 and size; the signature covers all of it.
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -25,6 +26,6 @@ json.dump({
 EOF
 signify-openbsd -S -s "$key" -m "$out/manifest.json" -x "$out/manifest.json.sig"
 # Prove the signature against the key routers carry, not just the one we signed with.
-signify-openbsd -V -q -p "$root/feed/dn-os-upgrade/files/etc/dn/os-keys/3420e953f030f5a8" -m "$out/manifest.json" -x "$out/manifest.json.sig" ||
+signify-openbsd -V -q -p "${DN_OS_VERIFY_PUB:-$root/feed/dn-os-upgrade/files/etc/dn/os-keys/3420e953f030f5a8}" -m "$out/manifest.json" -x "$out/manifest.json.sig" ||
   { echo "release: the manifest does not verify against the key baked into images" >&2; exit 1; }
 cat "$out/manifest.json"
