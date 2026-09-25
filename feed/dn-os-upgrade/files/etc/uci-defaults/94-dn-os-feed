@@ -1,0 +1,8 @@
+#!/bin/sh
+# Point opkg at DockNeighbor OS's own signed package feed (level 1 for the dn-* packages; dn-pkg-upgrade).
+# The key ships in /etc/opkg/keys/1c44072d07e3e228 with this package.
+URL=https://github.com/DockNeighbor/DockNeighbor-OS/releases/download/feed
+f=/etc/opkg/customfeeds.conf
+touch "$f"
+grep -q '^src/gz dn_os ' "$f" && sed -i '/^src\/gz dn_os /d' "$f"
+echo "src/gz dn_os $URL" >> "$f"

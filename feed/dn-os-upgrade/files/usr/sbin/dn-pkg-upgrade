@@ -1,0 +1,52 @@
+#!/bin/sh
+# dn-pkg-upgrade: LEVEL 1 for DockNeighbor OS's own packages. Upgrades every installed package that the signed
+# dn_os feed carries a newer version of, then restarts the services those packages own. A fix to a dn-* package
+# reaches routers this way, without a new firmware. (The hub-lite itself upgrades through its own self_update,
+# which guards the update with its rollback watchdog; the whole firmware is level 2, dn-os-upgrade.)
+#
+#   dn-pkg-upgrade           upgrade, then print JSON {"upgraded":[{"package","from","to"}...]}
+#   dn-pkg-upgrade --check   print what would be upgraded, change nothing
+#
+# opkg enforces the feed signature (option check_signature); an index that fails it is dropped and nothing
+# from it installs.
+. /usr/share/libubox/jshn.sh
+FEED=dn_os
+LIST=/var/opkg-lists/$FEED
+
+die() { logger -t dn-pkg-upgrade "failed: $*"; echo "dn-pkg-upgrade: $*" >&2; exit 1; }
+# opkg keeps its lists gzip-compressed in /var/opkg-lists (24.10); read them either way.
+list() { gunzip -c "$LIST" 2>/dev/null || cat "$LIST"; }
+
+opkg update >/dev/null 2>&1
+[ -s "$LIST" ] || die "the $FEED feed is unreachable or failed its signature check"
+
+# Candidates: upgradable per opkg AND named in the dn_os index, so nothing from another feed rides along.
+cands=""
+for p in $(opkg list-upgradable 2>/dev/null | awk '{print $1}'); do
+	list | grep -qx "Package: $p" && cands="$cands $p"
+done
+
+json_init
+json_add_array upgraded
+for p in $cands; do
+	from=$(opkg status "$p" | sed -n 's/^Version: //p')
+	if [ "${1:-}" != --check ]; then
+		opkg upgrade "$p" >/dev/null 2>&1 || die "opkg upgrade $p failed"
+		to=$(opkg status "$p" | sed -n 's/^Version: //p')
+		[ "$to" != "$from" ] || continue
+		# Restart what this package runs; a postinst only enables, it never restarts.
+		for s in $(opkg files "$p" | grep '^/etc/init.d/'); do
+			"$s" enabled 2>/dev/null && "$s" restart >/dev/null 2>&1
+		done
+		logger -t dn-pkg-upgrade "$p $from -> $to"
+	else
+		to=$(list | awk -v p="$p" '/^Package: /{n=$2} /^Version: /{if (n==p) print $2}' | tail -1)
+	fi
+	json_add_object
+	json_add_string package "$p"
+	json_add_string from "$from"
+	json_add_string to "$to"
+	json_close_object
+done
+json_close_array
+json_dump
