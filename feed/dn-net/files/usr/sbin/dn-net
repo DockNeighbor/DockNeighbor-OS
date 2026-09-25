@@ -27,8 +27,18 @@ die() { revert_all; echo "$*" >&2; exit 1; }
 # Stage a uci write, or fail the request with nothing staged. The message names the option, never its value.
 u() { uci "$@" 2>/dev/null || die "uci $1 ${2%%=*} failed"; }
 commit() { uci commit "$@" || die "uci commit $* failed"; }
-# Apply in the background after the caller has its answer; never in tests.
-later() { [ -n "${DN_NET_NO_APPLY:-}" ] && return 0; (sleep "${1:-2}"; shift; "$@") </dev/null >/dev/null 2>&1 & }
+# Apply in the background after the caller has its answer; never in tests. Its own session (setsid) and no stdio,
+# so it outlives the SSH session or uhttpd CGI that started it: a bridge switch must never lose its revert watchdog
+# because the caller hung up (the station's lesson, DockNeighbor-Station #14).
+later() {
+	[ -n "${DN_NET_NO_APPLY:-}" ] && return 0
+	_ld=$1; shift
+	if command -v setsid >/dev/null 2>&1; then
+		setsid sh -c 'sleep "$0"; "$@"' "$_ld" "$@" </dev/null >/dev/null 2>&1 &
+	else
+		(sleep "$_ld"; "$@") </dev/null >/dev/null 2>&1 &
+	fi
+}
 input() { json_load "$(cat)" 2>/dev/null || bad "the request body is not JSON"; }
 
 is_ip4() {
@@ -107,8 +117,8 @@ v_wifi_get() {
 		_ch=$(uci -q get "wireless.$_d.channel"); [ "$_ch" = auto ] || [ -z "$_ch" ] && _ch=0
 		json_add_int channel "$_ch"
 		json_add_array channels
-		_phy=$(echo "$_d" | sed 's/^radio/phy/')
-		for _c in $(iwinfo "$_phy" freqlist 2>/dev/null | sed -n 's/.*(Channel \([0-9]*\)).*/\1/p'); do json_add_int "" "$_c"; done
+		# 24.10's iwinfo prints "(Band: 2.4 GHz, Channel 1)"; take the number after "Channel " wherever it is.
+		for _c in $(iwinfo "$_d" freqlist 2>/dev/null | sed -n 's/.*Channel \([0-9][0-9]*\).*/\1/p'); do json_add_int "" "$_c"; done
 		json_close_array
 		_tx=$(uci -q get "wireless.$_d.txpower"); [ -n "$_tx" ] && json_add_string txpower "$_tx"
 		json_add_array encryptions

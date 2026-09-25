@@ -4,7 +4,7 @@ include $(TOPDIR)/rules.mk
 # NetworkDeviceDriver shapes, behind the hub-lite's /api/hub/net/* door. Also the ONE implementation of the Wi-Fi
 # uplink's role -> firewall rule (/usr/lib/dn-net/uplink.sh), which dn-handoff uses too.
 PKG_NAME:=dn-net
-PKG_VERSION:=1.1.0
+PKG_VERSION:=1.1.1
 PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=SC4 Technologies
