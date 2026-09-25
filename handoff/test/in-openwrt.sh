@@ -53,7 +53,7 @@ reset
 cat > "$SITE" <<EOF
 { "v": 1, "source": "test", "lan": { "ip": "192.168.8.1", "mask": "255.255.255.0" }, "country": "US",
   "ap": { "ssid": "Boat AP", "enc": "psk2", "key": "ap-secret-1" },
-  "uplink": { "type": "wifi", "ssid": "Marina", "enc": "psk-mixed", "key": "up-secret-2" },
+  "uplink": { "type": "wifi", "ssid": "Boatnet", "enc": "psk-mixed", "key": "up-secret-2", "role": "lan" },
   "reservations": [ { "name": "shelly1", "mac": "aa:bb:cc:00:00:01", "ip": "192.168.8.21" },
                     { "name": "linktap", "mac": "aa:bb:cc:00:00:02", "ip": "192.168.8.22" } ],
   "rootHash": "$HASH" }
@@ -65,7 +65,7 @@ eq "country" "$(uci get wireless.radio0.country)" US
 eq "ap ssid" "$(uci get wireless.dn_ap.ssid)" "Boat AP"
 eq "ap key" "$(uci get wireless.dn_ap.key)" ap-secret-1
 eq "default open AP removed" "$(uci -q get wireless.default_radio0 || echo gone)" gone
-eq "uplink ssid" "$(uci get wireless.dn_uplink.ssid)" Marina
+eq "uplink ssid" "$(uci get wireless.dn_uplink.ssid)" Boatnet
 eq "uplink mode" "$(uci get wireless.dn_uplink.mode)" sta
 eq "uplink enc" "$(uci get wireless.dn_uplink.encryption)" psk-mixed
 eq "wwan proto" "$(uci get network.wwan.proto)" dhcp
@@ -80,7 +80,7 @@ eq "root hash" "$(sed -n 's/^root:\([^:]*\):.*/\1/p' /etc/shadow)" "$HASH"
 eq "site file removed" "$([ -f "$SITE" ] && echo present || echo removed)" removed
 eq "committed (nothing left staged)" "$(uci changes | wc -l | tr -d ' ')" 0
 grep -q 'secret' /etc/dn/handoff.result && bad "result file leaks a key" || pass "result file has no keys"
-grep -q '^applied v1 .*reservations=2 password=carried' /etc/dn/handoff.result && pass "result: $(cat /etc/dn/handoff.result)" || bad "result: $(cat /etc/dn/handoff.result)"
+grep -q '^applied v1 .*uplink=Boatnet (lan) reservations=2 password=carried' /etc/dn/handoff.result && pass "result: $(cat /etc/dn/handoff.result)" || bad "result: $(cat /etc/dn/handoff.result)"
 
 echo "case 2: no site file is a no-op"
 reset
@@ -126,13 +126,47 @@ grep -q '^failed: uci set network.lan.ipaddr$' /etc/dn/handoff.result && pass "r
 
 echo "case 6: a retry after success does not duplicate the uplink zone or its entry"
 reset
-echo '{ "v": 1, "uplink": { "type": "wifi", "ssid": "M", "key": "k1234567" } }' > "$SITE"
+echo '{ "v": 1, "uplink": { "type": "wifi", "ssid": "M", "key": "k1234567", "role": "lan" } }' > "$SITE"
 sh "$APPLY" >/dev/null
-echo '{ "v": 1, "uplink": { "type": "wifi", "ssid": "M", "key": "k1234567" } }' > "$SITE"
+echo '{ "v": 1, "uplink": { "type": "wifi", "ssid": "M", "key": "k1234567", "role": "lan" } }' > "$SITE"
 sh "$APPLY"; eq "exit status" "$?" 0
 eq "wwan in the uplink zone once" "$(uci get firewall.dn_uplink.network | tr ' ' '\n' | grep -c '^wwan$')" 1
 eq "one uplink zone" "$(uci show firewall | grep -c "name='uplink'")" 1
 eq "one lan->uplink forwarding" "$(uci show firewall | grep -c "dest='uplink'")" 1
+
+in_zone() { uci -q get "firewall.$1.network" | tr ' ' '\n' | grep -c '^wwan$'; }
+
+echo "case 7: an uplink with NO role is a wan uplink (restricted), the safe default"
+reset
+echo '{ "v": 1, "uplink": { "type": "wifi", "ssid": "Marina", "key": "k1234567" } }' > "$SITE"
+sh "$APPLY"; eq "exit status" "$?" 0
+eq "wwan in the wan zone (drops input)" "$(in_zone "$(wan_zone)")" 1
+eq "no open uplink zone" "$(uci -q get firewall.dn_uplink.network | wc -w | tr -d ' ')" 0
+grep -q 'uplink=Marina (wan)' /etc/dn/handoff.result && pass "result says wan" || bad "result: $(cat /etc/dn/handoff.result)"
+
+echo "case 8: role wan, explicitly (a marina's public Wi-Fi)"
+reset
+echo '{ "v": 1, "uplink": { "type": "wifi", "ssid": "Marina", "key": "k1234567", "role": "wan" } }' > "$SITE"
+sh "$APPLY"; eq "exit status" "$?" 0
+eq "wwan in the wan zone" "$(in_zone "$(wan_zone)")" 1
+eq "not in an open zone" "$(in_zone dn_uplink)" 0
+
+echo "case 9: re-applying with a changed role moves wwan, never leaves it in both zones"
+reset
+echo '{ "v": 1, "uplink": { "type": "wifi", "ssid": "B", "key": "k1234567", "role": "lan" } }' > "$SITE"; sh "$APPLY" >/dev/null
+echo '{ "v": 1, "uplink": { "type": "wifi", "ssid": "B", "key": "k1234567", "role": "wan" } }' > "$SITE"; sh "$APPLY"
+eq "lan -> wan: now in wan" "$(in_zone "$(wan_zone)")" 1
+eq "lan -> wan: no longer open" "$(in_zone dn_uplink)" 0
+echo '{ "v": 1, "uplink": { "type": "wifi", "ssid": "B", "key": "k1234567", "role": "lan" } }' > "$SITE"; sh "$APPLY"
+eq "wan -> lan: now open" "$(in_zone dn_uplink)" 1
+eq "wan -> lan: no longer in wan" "$(in_zone "$(wan_zone)")" 0
+
+echo "case 10: an unknown role fails and changes nothing"
+reset
+echo '{ "v": 1, "lan": { "ip": "10.9.8.1" }, "uplink": { "type": "wifi", "ssid": "X", "key": "k1234567", "role": "dmz" } }' > "$SITE"
+sh "$APPLY"; eq "exit status" "$?" 1
+eq "nothing staged" "$(uci changes | wc -l | tr -d ' ')" 0
+grep -q "^failed: unknown uplink role 'dmz'" /etc/dn/handoff.result && pass "result: $(cat /etc/dn/handoff.result)" || bad "result: $(cat /etc/dn/handoff.result)"
 
 [ "$fails" -eq 0 ] || { echo "apply.test: $fails failure(s)"; exit 1; }
 echo "apply.test: all cases pass"

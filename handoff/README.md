@@ -32,7 +32,7 @@ vendor firmware                           DockNeighbor OS, first boot
   "lan": { "ip": "192.168.8.1", "mask": "255.255.255.0" },
   "country": "US",
   "ap": { "ssid": "…", "enc": "psk2", "key": "…" },
-  "uplink": { "type": "wifi", "ssid": "…", "enc": "psk-mixed", "key": "…" },
+  "uplink": { "type": "wifi", "ssid": "…", "enc": "psk-mixed", "key": "…", "role": "lan" },
   "reservations": [ { "name": "…", "mac": "…", "ip": "…" } ],
   "rootHash": "$5$…"
 }
@@ -42,7 +42,7 @@ vendor firmware                           DockNeighbor OS, first boot
 |---|---|
 | `lan` | The boat's devices and their webhooks point at the router's address (Shellys report to it). |
 | `ap` | The boat's devices are joined to this Wi-Fi. |
-| `uplink` | The router must get back online by itself. The access-point BSSID is **not** carried: pinning one breaks on a mesh or at a new berth. A Wi-Fi uplink goes in its own `uplink` firewall zone that **accepts input like LAN** (the boat network's devices reach 8722/8181/22) and still NATs the router's own AP clients. |
+| `uplink` | The router must get back online by itself. The access-point BSSID is **not** carried: pinning one breaks on a mesh or at a new berth. Its `role` sets the firewall: `lan` (the router joined the boat's own network, e.g. Starlink's Wi-Fi, to be the hub-lite) gets its own `uplink` zone that **accepts input like LAN** and still NATs the router's own AP clients; `wan` (a Wi-Fi internet uplink, e.g. a marina's) gets the `wan` zone, which drops input. **Missing means `wan`.** The vendor config can't tell them apart, so the app sets it (`UPLINK_ROLE` for `read-glinet.sh`). |
 | `reservations` | Fixed addresses the hub-lite reaches devices at. |
 | `rootHash` | The owner's admin password keeps working. It's a crypt hash, never the password. |
 | `country` | Legal Wi-Fi channels. |
