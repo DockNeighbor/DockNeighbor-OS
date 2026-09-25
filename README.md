@@ -53,7 +53,7 @@ monitor access and changing needs configure access; a monitor sees the Wi-Fi set
 | Internet | `wan`; the Wi-Fi uplink: `uplink-scan`, `uplink-get`, `uplink-join`, `uplink-disconnect`, `uplink-saved`, `uplink-forget` |
 | LAN and Wi-Fi | `lan-get`, `lan-set`, `wifi-get`, `wifi-set` |
 | Clients | `clients`, `client-block`, `reservations`, `reservation-add`, `reservation-remove` |
-| Mode | `mode-get`, `mode-set`: `router` (firewall and NAT) or `bridge` (the WAN port joins the LAN, no firewall, NAT or DHCP). Bridge mode reverts to router mode by itself if the bridge gets no address within 180 s. |
+| Mode | `mode-get`, `mode-set`: `router` (firewall and NAT) or `bridge` (no firewall, NAT or DHCP server). `via: wired` (default): the WAN port joins the LAN. `via: wifi`: relayd bridges the LAN onto the Wi-Fi uplink, whose network hands out every address; the WAN port is off. Bridge mode reverts to router mode by itself if it gets no address within 180 s. |
 | Device | `reboot`; `admin-password` (`{current, next}`): changes root's password only after `dn-auth` proves the current one. |
 
 A Wi-Fi uplink's firewall follows its role: `lan` when the router joined the boat's own network (open like the
