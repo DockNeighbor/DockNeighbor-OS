@@ -58,6 +58,13 @@ jobs:
           [ -f "$f" ] || curl -fsSL -o "$f" "$OPENWRT_BASE/$UPSTREAM_IMAGE_FILE"
           echo "$UPSTREAM_IMAGE_SHA256  $f" | sha256sum -c --status
           if sh scripts/check-hub-lite-image.sh "$f"; then echo "::error::the image check passed plain upstream OpenWrt"; exit 1; fi
+      # The release's signing path, on every PR, with a throwaway key (the real one is only in release.yml).
+      - name: Release manifest (dry run, throwaway key)
+        run: |
+          set -eu
+          d=$(mktemp -d); signify-openbsd -G -n -p "$d/t.pub" -s "$d/t.sec"
+          DN_OS_VERIFY_PUB="$d/t.pub" sh scripts/release-manifest.sh hub-lite-os-v0.0.0-dryrun "$d/t.sec"
+          rm -f out/hub-lite/manifest.json out/hub-lite/manifest.json.sig
       - uses: actions/upload-artifact@v4
         with:
           name: dockneighbor-os-hub-lite-${{ github.sha }}

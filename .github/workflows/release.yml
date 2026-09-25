@@ -40,7 +40,8 @@ jobs:
         run: |
           set -eu
           [ -n "$DN_OS_RELEASE_USIGN_KEY" ] || { echo "::error::DN_OS_RELEASE_USIGN_KEY is not set"; exit 1; }
-          umask 077; k=$(mktemp); trap 'rm -f "$k"' EXIT
+          # signify insists on the <name>.sec naming scheme.
+          umask 077; d=$(mktemp -d); trap 'rm -rf "$d"' EXIT; k="$d/dn-os-release.sec"
           printf '%s\n' "$DN_OS_RELEASE_USIGN_KEY" > "$k"
           sh scripts/release-manifest.sh "$GITHUB_REF_NAME" "$k"
       - name: Publish the release, then move the channel to it
