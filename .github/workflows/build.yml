@@ -60,6 +60,10 @@ jobs:
         run: sh feed/dn-auth/test/auth.test.sh
       - name: dn-net (the DN device API's OS half), on real OpenWrt userland
         run: sh feed/dn-net/test/net.test.sh
+      # A DATA BILL, not a code path: the hub-lite restore used to retry for ever at a flat 5 minutes,
+      # running a full `opkg update` each time on a router whose wanted version could never install.
+      - name: hub-lite restore backs off, stops, and stops fetching the package index
+        run: sh feed/dn-hub-lite-os/test/restore.test.sh
       - name: Every changed package bumps its version (else routers never receive it)
         if: github.event_name == 'pull_request'
         run: sh scripts/check-feed-versions.sh "origin/${{ github.base_ref }}"

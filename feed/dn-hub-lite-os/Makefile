@@ -5,7 +5,7 @@ include $(TOPDIR)/rules.mk
 # here reaches routers through the dn_os feed without a new firmware.
 PKG_NAME:=dn-hub-lite-os
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=SC4 Technologies
 

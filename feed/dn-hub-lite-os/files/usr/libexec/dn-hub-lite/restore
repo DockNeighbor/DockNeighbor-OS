@@ -2,17 +2,102 @@
 # After a full-OS upgrade (level 2), put the hub-lite back to at least the version that ran before it:
 # the new image carries its own hub-lite, which can be older than one level 1 installed from the feed.
 # dn-os-upgrade wrote that version to /etc/dn/hub-lite.min (kept across the upgrade).
-# Exit 0 = nothing to do or done; non-zero = procd retries later (the uplink may not be up yet).
+# Exit 0 = nothing to do, done, or given up; non-zero = the init script sleeps and retries.
+#
+# ── 🔴 WHY THIS HAS A RETRY BUDGET AND AN INDEX CACHE (2026-09-26) ───────────────────────────────
+# This used to be a bare `exit 1` under `until restore; do sleep 300; done`: unbounded, fixed five
+# minutes, and every single attempt ran a full `opkg update`.
+#
+# The cheap failure is the obvious one — the feed is unreachable, `opkg update` fails, and almost
+# nothing is transferred. THE EXPENSIVE ONE IS THE OPPOSITE: the feed is REACHABLE but `want` cannot
+# be obtained (it was never published for this architecture, it has been pruned, a dependency will
+# not resolve). Then `opkg update` SUCCEEDS — pulling the whole package index, megabytes — and the
+# install fails anyway. Exit 1, sleep 300, and pull the entire index again. 288 times a day, on a
+# boat's LTE plan, forever, for a router that will never succeed.
+#
+# It is also the quietest possible failure: the only trace is `logger`, which nobody off the boat
+# reads, and the router still works — it is running the image's own older hub-lite.
+#
+# So: back off (5 min doubling to 6 h), stop after MAX_TRIES and say so in a file, and do not re-fetch
+# an index we already fetched within LISTS_FRESH. Worst case goes from ~288 index downloads a day to
+# at most 4, and it ends.
+#
+# The backoff state lives in tmpfs ON PURPOSE: a reboot is a new attempt at full speed (someone may
+# have just fixed the feed, or moved the boat into signal), and this must not write to flash every
+# five minutes. The give-up marker is the one thing that persists, because it is the answer to "why
+# is this router still on the old hub-lite".
+
 MIN=/etc/dn/hub-lite.min
+# Overridable so the test can run without touching the real paths.
+STATE_DIR="${DN_RESTORE_STATE:-/var/run}"
+DN_DIR="${DN_RESTORE_DN_DIR:-/etc/dn}"
+WAIT_FILE="$STATE_DIR/dn-hub-lite.restore.wait"
+TRIES_FILE="$STATE_DIR/dn-hub-lite.restore.tries"
+LISTS_STAMP="$STATE_DIR/dn-hub-lite.restore.lists"
+GIVEUP="$DN_DIR/hub-lite.restore.giveup"
+MIN="${DN_RESTORE_MIN:-$MIN}"
+
+WAIT_FIRST="${DN_RESTORE_WAIT_FIRST:-300}"      # the first retry, as before
+WAIT_MAX="${DN_RESTORE_WAIT_MAX:-21600}"        # 6 h
+MAX_TRIES="${DN_RESTORE_MAX_TRIES:-20}"         # ~5 days with the ladder above, then stop
+LISTS_FRESH="${DN_RESTORE_LISTS_FRESH:-21600}"  # re-use a package index fetched within 6 h
+
+now() { date +%s; }
+have() { opkg status brvg-hub-lite 2>/dev/null | sed -n 's/^Version: //p'; }
+good() { [ -n "$(have)" ] && opkg compare-versions "$(have)" '>=' "$1"; }
+clear_state() { rm -f "$WAIT_FILE" "$TRIES_FILE" "$LISTS_STAMP" 2>/dev/null; }
+
 [ -s "$MIN" ] || exit 0
 want=$(cat "$MIN")
-have() { opkg status brvg-hub-lite 2>/dev/null | sed -n 's/^Version: //p'; }
-if [ -n "$(have)" ] && opkg compare-versions "$(have)" '>=' "$want"; then rm -f "$MIN"; exit 0; fi
-opkg update >/dev/null 2>&1 || { logger -t dn-hub-lite "restore: feed unreachable, retrying"; exit 1; }
-opkg upgrade brvg-hub-lite >/dev/null 2>&1 || opkg install brvg-hub-lite >/dev/null 2>&1
-if [ -n "$(have)" ] && opkg compare-versions "$(have)" '>=' "$want"; then
-	logger -t dn-hub-lite "restore: hub-lite $(have) (was $want before the OS upgrade)"
-	rm -f "$MIN"; exit 0
+
+# Already good — including the case where somebody fixed it by hand between attempts.
+if good "$want"; then
+	rm -f "$MIN" "$GIVEUP"; clear_state; exit 0
 fi
-logger -t dn-hub-lite "restore: hub-lite is $(have), want $want; retrying"
+
+# Stopped earlier, and nothing has rebooted since. Do not start the loop again.
+[ -f "$GIVEUP" ] && exit 0
+
+tries=$(( $(cat "$TRIES_FILE" 2>/dev/null || echo 0) + 1 ))
+mkdir -p "$STATE_DIR" 2>/dev/null
+echo "$tries" > "$TRIES_FILE"
+
+if [ "$tries" -gt "$MAX_TRIES" ]; then
+	mkdir -p "$DN_DIR" 2>/dev/null
+	echo "want=$want have=$(have) tries=$tries at=$(now)" > "$GIVEUP"
+	logger -t dn-hub-lite "restore: GIVING UP after $tries attempts - hub-lite is $(have), wanted $want. Running the image's own hub-lite; see $GIVEUP"
+	clear_state
+	# 🔴 EXIT 0 IS THE POINT. The init script's `until` loop ends only on a zero exit, so this is what
+	# actually stops the data burn. The router keeps working on the hub-lite the image shipped.
+	exit 0
+fi
+
+# Schedule the NEXT wait BEFORE doing any work, so every failing path below backs off — including one
+# that dies in the middle of opkg.
+wait=$(cat "$WAIT_FILE" 2>/dev/null || echo "$WAIT_FIRST")
+case "$wait" in ''|*[!0-9]*) wait=$WAIT_FIRST ;; esac
+next=$(( wait * 2 ))
+[ "$next" -gt "$WAIT_MAX" ] && next=$WAIT_MAX
+echo "$next" > "$WAIT_FILE"
+
+# ⚠️ THE INDEX IS THE EXPENSIVE PART, NOT THE PACKAGE. Only re-fetch it when ours is stale; a feed that
+# just gained the version we want is worth waiting up to LISTS_FRESH for, and that is a far better
+# trade than pulling megabytes every five minutes for days.
+stamp=$(cat "$LISTS_STAMP" 2>/dev/null || echo 0)
+case "$stamp" in ''|*[!0-9]*) stamp=0 ;; esac
+if [ "$(( $(now) - stamp ))" -ge "$LISTS_FRESH" ]; then
+	if opkg update >/dev/null 2>&1; then
+		echo "$(now)" > "$LISTS_STAMP"
+	else
+		logger -t dn-hub-lite "restore: feed unreachable (attempt $tries/$MAX_TRIES), retrying in ${next}s"
+		exit 1
+	fi
+fi
+
+opkg upgrade brvg-hub-lite >/dev/null 2>&1 || opkg install brvg-hub-lite >/dev/null 2>&1
+if good "$want"; then
+	logger -t dn-hub-lite "restore: hub-lite $(have) (was $want before the OS upgrade)"
+	rm -f "$MIN" "$GIVEUP"; clear_state; exit 0
+fi
+logger -t dn-hub-lite "restore: hub-lite is $(have), want $want (attempt $tries/$MAX_TRIES); retrying in ${next}s"
 exit 1

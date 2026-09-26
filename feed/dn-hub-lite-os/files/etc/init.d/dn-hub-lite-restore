@@ -1,12 +1,18 @@
 #!/bin/sh /etc/rc.common
-# Retry /usr/libexec/dn-hub-lite/restore every 5 minutes until it succeeds (it exits 0 at once when there is
+# Retry /usr/libexec/dn-hub-lite/restore until it succeeds OR gives up (it exits 0 at once when there is
 # nothing to restore, which is every boot except the first after a full-OS upgrade).
+#
+# ⚠️ THE SLEEP IS THE SCRIPT'S TO DECIDE, NOT A CONSTANT HERE. It was a flat 300, which made this loop
+# unbounded: a router whose wanted hub-lite can never be installed pulled the whole opkg index every
+# five minutes, for ever, on a boat's LTE plan. `restore` now writes the next delay and stops the loop
+# itself by exiting 0 once its retry budget is spent — see the header there. 300 is only the fallback
+# for the first attempt, before the file exists.
 START=99
 USE_PROCD=1
 
 start_service() {
 	[ -s /etc/dn/hub-lite.min ] || return 0
 	procd_open_instance
-	procd_set_param command /bin/sh -c 'until /usr/libexec/dn-hub-lite/restore; do sleep 300; done'
+	procd_set_param command /bin/sh -c 'until /usr/libexec/dn-hub-lite/restore; do sleep "$(cat /var/run/dn-hub-lite.restore.wait 2>/dev/null || echo 300)"; done'
 	procd_close_instance
 }
