@@ -36,6 +36,7 @@ jobs:
                    feed/dn-net/files/usr/sbin/dn-net feed/dn-net/files/usr/lib/dn-net/uplink.sh \
                    scripts/release-manifest.sh scripts/publish-feed.sh scripts/check-feed-versions.sh \
                    scripts/build-hub-lite.sh scripts/check-hub-lite-image.sh scripts/hub-lite-board.sh \
+                   scripts/overlay-headroom.sh scripts/test/overlay-headroom.test.sh \
                    profiles/hub-lite/boards/*/files/etc/uci-defaults/*; do
             sh -n "$f"
           done
@@ -48,6 +49,8 @@ jobs:
           root=$PWD; . scripts/hub-lite-board.sh
           for b in $(hub_lite_boards); do (hub_lite_load "$b" && echo "$b: $BOARD_TITLE, OpenWrt $OPENWRT_VERSION $OPENWRT_TARGET, $PKG_ARCH"); done
           echo "list=$(hub_lite_boards | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+      - name: Overlay headroom (where rootfs_data starts, jffs2's reserve)
+        run: sh scripts/test/overlay-headroom.test.sh
       - name: Handoff renderer, on real OpenWrt userland
         run: sh handoff/test/apply.test.sh
       - name: Handoff reader (GL.iNet 4.x) then renderer, end to end, on real OpenWrt userland
@@ -96,6 +99,21 @@ jobs:
           [ -f "$f" ] || curl -fsSL -o "$f" "$OPENWRT_BASE/$UPSTREAM_IMAGE_FILE"
           echo "$UPSTREAM_IMAGE_SHA256  $f" | sha256sum -c --status
           if sh scripts/check-hub-lite-image.sh "$f" "${{ matrix.board }}"; then echo "::error::the image check passed plain upstream OpenWrt"; exit 1; fi
+      # The overlay check can fail too: with OVERLAY_MIN one byte above what this image leaves, it must say so.
+      - name: The overlay check can fail (OVERLAY_MIN above this image's headroom)
+        run: |
+          set -eu
+          img=$(ls out/hub-lite/${{ matrix.board }}/*-squashfs-sysupgrade.bin)
+          usable=$(sh scripts/check-hub-lite-image.sh "$img" "${{ matrix.board }}" | sed -n 's/.*info  overlay: .*bytes, \([0-9][0-9]*\) usable.*/\1/p')
+          [ -n "$usable" ] || { echo "::error::the image check printed no overlay headroom"; exit 1; }
+          t=$(mktemp -d); cp -R scripts profiles "$t/"
+          sed -i "s/^OVERLAY_MIN=.*/OVERLAY_MIN=$((usable + 1))/" "$t/profiles/hub-lite/profile.env"
+          if sh "$t/scripts/check-hub-lite-image.sh" "$img" "${{ matrix.board }}" > "$t/out.log"; then
+            cat "$t/out.log"; echo "::error::the overlay check passed with OVERLAY_MIN above the headroom"; exit 1
+          fi
+          grep -q "FAIL  overlay usable $usable < OVERLAY_MIN $((usable + 1))" "$t/out.log" ||
+            { cat "$t/out.log"; echo "::error::the image check failed, but not on the overlay"; exit 1; }
+          echo "overlay check fails at OVERLAY_MIN=$((usable + 1)), as it must ($usable usable)"
       # The release's signing path, on every PR, with a throwaway key (the real one is only in release.yml).
       - name: Release manifest (dry run, throwaway key)
         run: |

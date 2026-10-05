@@ -18,7 +18,8 @@ hub_lite_load() {
 	. "$prof/boards/$1/board.env"
 	[ "$DEVICE" = "$1" ] || { echo "hub-lite: boards/$1/board.env says DEVICE=$DEVICE" >&2; return 1; }
 	for _v in OPENWRT_VERSION OPENWRT_COMMIT OPENWRT_TARGET OPENWRT_BASE PKG_ARCH SDK_FILE SDK_SHA256 IB_FILE IB_SHA256 \
-		UPSTREAM_IMAGE_FILE UPSTREAM_IMAGE_SHA256 BOARD FIRMWARE_SIZE DN_OS_CHANNEL_URL DN_OS_VERSION HUB_LITE_VERSION; do
+		UPSTREAM_IMAGE_FILE UPSTREAM_IMAGE_SHA256 BOARD FIRMWARE_SIZE ERASE_SIZE DN_OS_CHANNEL_URL DN_OS_VERSION HUB_LITE_VERSION \
+		OVERLAY_MIN; do
 		eval "_x=\${$_v:-}"
 		[ -n "$_x" ] || { echo "hub-lite: $_v is not set for board $1" >&2; return 1; }
 	done
