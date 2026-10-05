@@ -6,6 +6,7 @@
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 . "$root/scripts/hub-lite-board.sh"
+. "$root/scripts/overlay-headroom.sh"
 img=${1:-}; hub_lite_load "${2:-}"
 [ -f "$img" ] || { echo "check: no image $img" >&2; exit 1; }
 fails=0
@@ -30,9 +31,19 @@ for off in $(grep -obUa hsqs "$img" | cut -d: -f1); do
   # Unprivileged, unsquashfs can't create the image's device nodes and exits 2. Accept that, and ONLY that.
   rc=0; unsquashfs -q -n -o "$off" -d "$tmp/r" "$img" >"$tmp/u.log" 2>&1 || rc=$?
   if [ "$rc" -eq 2 ] && ! grep -v -e "could not create character device" -e "could not create block device" "$tmp/u.log" | grep -q .; then rc=0; fi
-  if [ "$rc" -eq 0 ] && [ -d "$tmp/r/etc" ]; then r="$tmp/r"; break; fi
+  if [ "$rc" -eq 0 ] && [ -d "$tmp/r/etc" ]; then r="$tmp/r"; sqfs=$off; break; fi
 done
 [ -n "$r" ] || { bad "no squashfs rootfs found"; echo "check: $fails failure(s)"; exit 1; }
+
+# Fitting the partition is not enough: what the router installs later (a level-1 hub upgrade, its state) lands in
+# the overlay the image leaves behind. OVERLAY_MIN (profile.env) is what that needs.
+if hr=$(overlay_headroom "$img" "$sqfs" "$FIRMWARE_SIZE" "$ERASE_SIZE"); then
+  set -- $hr
+  echo "  info  overlay: rootfs_data at $1, $2 bytes, $3 usable above jffs2's reserve"
+  [ "$3" -ge "$((OVERLAY_MIN))" ] && ok "overlay usable $3 >= $((OVERLAY_MIN))" || bad "overlay usable $3 < OVERLAY_MIN $((OVERLAY_MIN)): no room for a level-1 hub upgrade"
+else
+  bad "overlay headroom could not be measured"
+fi
 
 grep -q 'ssh-ed25519' "$r/usr/sbin/dropbear" 2>/dev/null && ok "dropbear speaks ssh-ed25519" || bad "dropbear has no ssh-ed25519 (upstream small_flash build)"
 [ -x "$r/usr/bin/brvg-hub-lite" ] && ok "hub-lite installed" || bad "hub-lite missing"

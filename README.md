@@ -107,6 +107,11 @@ sh scripts/build-hub-lite.sh glinet_gl-x750    # -> out/hub-lite/glinet_gl-x750/
 sh scripts/build-hub-lite.sh                   # every board
 ```
 
+The image check (`scripts/check-hub-lite-image.sh`) opens the finished image. Besides fitting the board's firmware
+partition, the image must leave `OVERLAY_MIN` (`profiles/hub-lite/profile.env`) of writable overlay, measured where
+the kernel puts it: rootfs_data starts at the end of the squashfs, rounded up to an erase block, less jffs2's reserve.
+That room is what a level-1 upgrade of the hub needs.
+
 Every upstream download is pinned by sha256, in `profiles/hub-lite/upstream.env` (shared) and each
 `profiles/hub-lite/boards/<device>/board.env`. Those hashes come from
 OpenWrt's `sha256sums` for the release, whose signature was verified against the 24.10 release key
