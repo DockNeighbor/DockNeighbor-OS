@@ -3,7 +3,9 @@
 # jshn and jsonfilter. No netifd, radios or routes in a container, so ifstatus, ubus, `ip route` and pgrep are stubs
 # fed from fixtures in the shapes the router prints. The clock is DN_STATUS_NOW.
 ST=/t/feed/dn-status/files/usr/libexec/dn-status/status
-mkdir -p /tmp/stub /tmp/fx /tmp/sysinfo
+mkdir -p /tmp/stub /tmp/fx /tmp/sysinfo /etc/config
+# The rootfs may ship without a network config; the script reads network.lte from uci, committed.
+[ -f /etc/config/network ] || touch /etc/config/network
 export PATH=/tmp/stub:$PATH DN_STATUS_HUB=/tmp/fx/hub.json DN_STATUS_RELEASE=/tmp/fx/dn-release DN_STATUS_NOW=1800000000
 fails=0
 pass() { echo "  ok    $*"; }
@@ -36,7 +38,7 @@ printf 'DN_OS_PROFILE=hub-lite\nDN_OS_VERSION=0.1.6\nDN_OS_UPSTREAM="OpenWrt 24.
 AP='{"radio0":{"up":true,"interfaces":[{"section":"default_radio0","ifname":"phy0-ap0","config":{"mode":"ap","ssid":"Boatnet","key":"s3cret-wifi"}}]}}'
 AP_STA='{"radio0":{"up":true,"interfaces":[{"ifname":"phy0-ap0","config":{"mode":"ap","ssid":"Boatnet","key":"s3cret-wifi"}},{"ifname":"phy0-sta0","config":{"mode":"sta","ssid":"Marina","key":"marina-pass"}}]}}'
 hub() { printf '{"v":1,"hub":"hub-lite","version":"0.18.11","tickAt":%s,"tickEveryS":60,"cloudOkAt":%s,"cloudFailAt":%s}\n' "$1" "$2" "$3" > /tmp/fx/hub.json; }
-reset() { rm -f /tmp/fx/route /tmp/fx/if.* /tmp/fx/wireless /tmp/fx/hub.json /tmp/fx/hub-running; uci -q delete network.lte; true; }
+reset() { rm -f /tmp/fx/route /tmp/fx/if.* /tmp/fx/wireless /tmp/fx/hub.json /tmp/fx/hub-running; uci -q delete network.lte; uci commit network; true; }
 
 echo "wired, Wi-Fi AP up, a fresh hub whose last report succeeded"
 reset
@@ -108,7 +110,8 @@ eq "a status file of another version is not trusted" "$(j @.cloud.state)" unknow
 
 echo "cellular: the X750's QMI modem carries the default route"
 reset
-uci set network.lte=interface; uci set network.lte.proto=qmi
+uci set network.lte=interface; uci set network.lte.proto=qmi; uci commit network
+eq "fixture: the modem is configured" "$(uci -q get network.lte.proto)" qmi
 echo 'default dev wwan0 proto static scope link src 10.64.1.2 metric 30' > /tmp/fx/route
 echo '{"up":true,"l3_device":"wwan0","uptime":3600}' > /tmp/fx/if.lte
 echo "$AP" > /tmp/fx/wireless
