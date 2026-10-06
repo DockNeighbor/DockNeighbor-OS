@@ -34,6 +34,8 @@ jobs:
                    feed/dn-hub-lite-os/files/usr/libexec/dn-hub-lite/restore feed/dn-hub-lite-os/files/etc/init.d/dn-hub-lite-restore \
                    feed/dn-hub-lite-os/files/etc/uci-defaults/95-dn-hub-lite \
                    feed/dn-net/files/usr/sbin/dn-net feed/dn-net/files/usr/lib/dn-net/uplink.sh \
+                   feed/dn-status/files/usr/libexec/dn-status/status feed/dn-status/files/etc/init.d/dn-status \
+                   feed/dn-status/files/www/dn-status/cgi-bin/status feed/dn-status/test/in-openwrt.sh \
                    scripts/release-manifest.sh scripts/publish-feed.sh scripts/check-feed-versions.sh \
                    scripts/build-hub-lite.sh scripts/check-hub-lite-image.sh scripts/hub-lite-board.sh \
                    scripts/overlay-headroom.sh scripts/test/overlay-headroom.test.sh \
@@ -63,6 +65,8 @@ jobs:
         run: sh feed/dn-auth/test/auth.test.sh
       - name: dn-net (the DN device API's OS half), on real OpenWrt userland
         run: sh feed/dn-net/test/net.test.sh
+      - name: dn-status (the read-only status page), on real OpenWrt userland
+        run: sh feed/dn-status/test/status.test.sh
       # A DATA BILL, not a code path: the hub-lite restore used to retry for ever at a flat 5 minutes,
       # running a full `opkg update` each time on a router whose wanted version could never install.
       - name: hub-lite restore backs off, stops, and stops fetching the package index

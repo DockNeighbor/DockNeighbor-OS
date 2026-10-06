@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DockNeighbor OS</title>
+<!-- The read-only status page (owner ruling 2026-10-05). Self-contained: the router may be offline, so nothing is
+     loaded from anywhere else. It reads /cgi-bin/status every 15 s and changes nothing. -->
+<style>
+  :root { --bg: #f6f8f8; --card: #fff; --text: #0b1f1e; --muted: #5a6b6a; --ok: #0b7a4c; --bad: #b3271b; --unk: #8a8f8f; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0f1716; --card: #17211f; --text: #e6efed; --muted: #9aaba8; --ok: #3fbf86; --bad: #f07a6e; --unk: #7d8786; } }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 480px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 1.3rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: .85rem; margin-bottom: 16px; }
+  ul { list-style: none; margin: 0; padding: 0; background: var(--card); border-radius: 12px; }
+  li { display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid rgba(127,127,127,.15); }
+  li:last-child { border-bottom: 0; }
+  .v { text-align: right; font-weight: 600; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .unk { color: var(--unk); }
+  .v small { display: block; font-weight: 400; color: var(--muted); }
+  footer { color: var(--muted); font-size: .8rem; margin-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>DockNeighbor OS <span id="ver"></span></h1>
+  <div class="sub" id="sub">Checking…</div>
+  <ul id="rows"></ul>
+  <footer>This page only shows status. Settings are in the DockNeighbor app.</footer>
+</main>
+<script>
+  // Labels and states: owner-approved copy (2026-10-05, DockNeighbor-OS #17). Change them only with the owner.
+  var VIA = { wired: 'Wired', wifi: 'Wi-Fi', cellular: 'Cellular', none: 'None' };
+  function ago(s) {
+    if (s < 90) return 'just now';
+    if (s < 5400) return Math.round(s / 60) + ' min ago';
+    return Math.round(s / 3600) + ' h ago';
+  }
+  function row(label, text, cls, note) {
+    var li = document.createElement('li');
+    var a = document.createElement('span'); a.textContent = label;
+    var b = document.createElement('span'); b.className = 'v ' + cls; b.textContent = text;
+    if (note) { var n = document.createElement('small'); n.textContent = note; b.appendChild(n); }
+    li.appendChild(a); li.appendChild(b); return li;
+  }
+  function render(s) {
+    var rows = document.getElementById('rows'); rows.textContent = '';
+    document.getElementById('ver').textContent = (s.os && s.os.version) || '';
+    document.getElementById('sub').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    var i = s.internet || {};
+    rows.appendChild(row('Internet', i.up ? 'Connected' : 'Not connected', i.up ? 'ok' : 'bad', i.up ? 'via ' + (VIA[i.via] || i.via) : ''));
+    if (s.cellular && s.cellular.present) rows.appendChild(row('Cellular', s.cellular.up ? 'Working' : 'Not connected', s.cellular.up ? 'ok' : 'bad'));
+    var w = s.wifi || {};
+    rows.appendChild(row('Wi-Fi', w.ap === 'up' ? 'On' : w.ap === 'down' ? 'Off' : 'Unknown', w.ap === 'up' ? 'ok' : w.ap === 'down' ? 'bad' : 'unk'));
+    if (w.uplink && w.uplink !== 'none') rows.appendChild(row('Wi-Fi internet', w.uplink === 'up' ? 'Connected' : 'Not connected', w.uplink === 'up' ? 'ok' : 'bad'));
+    if (s.lora && s.lora.present) rows.appendChild(row('LoRa radio', s.lora.up ? 'Working' : 'Not working', s.lora.up ? 'ok' : 'bad'));
+    var h = (s.hub || {}).state;
+    rows.appendChild(row('Hub', h === 'running' ? 'Running' : h === 'stopped' ? 'Stopped' : 'Unknown', h === 'running' ? 'ok' : h === 'stopped' ? 'bad' : 'unk'));
+    var c = s.cloud || {};
+    rows.appendChild(row('Cloud', c.state === 'connected' ? 'Connected' : c.state === 'disconnected' ? 'Not connected' : 'Unknown',
+      c.state === 'connected' ? 'ok' : c.state === 'disconnected' ? 'bad' : 'unk',
+      typeof c.okAgoS === 'number' ? 'last report ' + ago(c.okAgoS) : ''));
+  }
+  function load() {
+    var x = new XMLHttpRequest();
+    x.open('GET', '/cgi-bin/status');
+    x.timeout = 10000;
+    x.onload = function () { try { render(JSON.parse(x.responseText)); } catch (e) { fail(); } };
+    x.onerror = x.ontimeout = fail;
+    x.send();
+  }
+  function fail() { document.getElementById('sub').textContent = 'The router did not answer.'; }
+  load(); setInterval(load, 15000);
+</script>
+</body>
+</html>

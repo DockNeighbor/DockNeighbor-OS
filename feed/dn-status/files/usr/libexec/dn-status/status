@@ -1,0 +1,114 @@
+#!/bin/sh
+# The router's health as JSON, for the read-only status page (owner ruling 2026-10-05: radios, hub, cloud; anyone on
+# the LAN may read it, and it stays up when local administration is off). Read-only by construction: it runs
+# ifstatus, ubus status calls, `ip route` and reads two files, and changes nothing.
+#
+# NO SECRETS AND NO NAMES: no SSIDs, keys, tokens, addresses or client lists. Only states and the OS/hub versions.
+#
+# Every source that can't be read is "unknown", never a pass:
+#   * the hub: /tmp/dn-hub-status.json, written by the hub on each loop pass (tmpfs). Contract, agreed with the Hubs
+#     session 2026-10-05 for hub-lite now and the Rust lite later: {"v":1,"hub":"hub-lite"|"daemon","version":…,
+#     "pid":…,"tickAt":<epoch>,"tickEveryS":<the nap this pass is about to take>,"cloudOkAt":<epoch|0>,
+#     "cloudFailAt":<epoch|0>}; 0 means never. tickEveryS is read fresh every time: it changes between passes (a
+#     valve wake drops it to 5 s; a bare router naps until its check-in, up to 180 min). A v1 file without it is
+#     not trusted. With no file, a running hub-lite process is "running" and the cloud is "unknown".
+#   * the cloud: the hub's last report outcome; "connected" only when its last report succeeded.
+#
+# CGI when REQUEST_METHOD is set (uhttpd), plain JSON on stdout otherwise.
+. /usr/share/libubox/jshn.sh
+
+HUB_STATUS=${DN_STATUS_HUB:-/tmp/dn-hub-status.json}
+RELEASE=${DN_STATUS_RELEASE:-/etc/dn-release}
+STA_IF=${DN_NET_STA_IF:-phy0-sta0}
+NOW=${DN_STATUS_NOW:-$(date +%s)}
+
+num() { case "$1" in ''|*[!0-9]*) echo 0 ;; *) echo "$1" ;; esac; }
+up_of() { [ "$(ifstatus "$1" 2>/dev/null | jsonfilter -e '@.up' 2>/dev/null)" = true ] && echo 1 || echo 0; }
+rel() { sed -n "s/^$1=//p" "$RELEASE" 2>/dev/null | tr -d '"' | head -1; }
+
+json_init
+json_add_int v 1
+json_add_int at "$NOW"
+
+json_add_object os
+json_add_string version "$(rel DN_OS_VERSION)"
+json_add_string board "$(cat /tmp/sysinfo/board_name 2>/dev/null)"
+json_close_object
+
+# Internet: which uplink carries the default route (the same rule as dn-net wan, plus the cellular modem).
+_dev=$(ip -4 route show default 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+_cell=0; [ "$(uci -q get network.lte.proto)" = qmi ] && _cell=1
+_celldev=""; [ "$_cell" = 1 ] && _celldev=$(ifstatus lte 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null)
+case "$_dev" in
+	"") _via=none ;;
+	"$STA_IF") _via=wifi ;;
+	*) if [ -n "$_celldev" ] && [ "$_dev" = "$_celldev" ]; then _via=cellular; else _via=wired; fi ;;
+esac
+json_add_object internet
+json_add_boolean up "$([ -n "$_dev" ] && echo 1 || echo 0)"
+json_add_string via "$_via"
+json_close_object
+
+# Radios. Cellular: a QMI modem configured (the GL-X750); its interface up means it registered and has a session.
+json_add_object cellular
+json_add_boolean present "$_cell"
+[ "$_cell" = 1 ] && json_add_boolean up "$(up_of lte)"
+json_close_object
+
+# Wi-Fi: the access point is up when a radio is up and carries an AP interface; the uplink, when one is configured.
+_ws=$(ubus call network.wireless status 2>/dev/null)
+_radio_up=$(printf '%s' "$_ws" | jsonfilter -e '@.*.up' 2>/dev/null | grep -c '^true$')
+_ap=$(printf '%s' "$_ws" | jsonfilter -e '@.*.interfaces[@.config.mode="ap"].ifname' 2>/dev/null | grep -c .)
+_sta=$(printf '%s' "$_ws" | jsonfilter -e '@.*.interfaces[@.config.mode="sta"].ifname' 2>/dev/null | grep -c .)
+json_add_object wifi
+if [ -z "$_ws" ]; then
+	json_add_string ap unknown
+else
+	json_add_string ap "$([ "$_radio_up" -gt 0 ] && [ "$_ap" -gt 0 ] && echo up || echo down)"
+fi
+if [ "$_sta" -gt 0 ]; then json_add_string uplink "$([ "$(up_of wwan)" = 1 ] && echo up || echo down)"; else json_add_string uplink none; fi
+json_close_object
+
+# LoRa: a station's radio. No router has one; the station image fills this in.
+json_add_object lora
+json_add_boolean present 0
+json_close_object
+
+# The hub, and through it the cloud.
+_hub=unknown; _cloud=unknown; _hver=""; _okago=""
+if [ -r "$HUB_STATUS" ] && _hj=$(cat "$HUB_STATUS" 2>/dev/null) && [ "$(printf '%s' "$_hj" | jsonfilter -e '@.v' 2>/dev/null)" = 1 ]; then
+	_hver=$(printf '%s' "$_hj" | jsonfilter -e '@.version' 2>/dev/null)
+	_tick=$(num "$(printf '%s' "$_hj" | jsonfilter -e '@.tickAt' 2>/dev/null)")
+	_every=$(num "$(printf '%s' "$_hj" | jsonfilter -e '@.tickEveryS' 2>/dev/null)")
+	_ok=$(num "$(printf '%s' "$_hj" | jsonfilter -e '@.cloudOkAt' 2>/dev/null)")
+	_fail=$(num "$(printf '%s' "$_hj" | jsonfilter -e '@.cloudFailAt' 2>/dev/null)")
+	# Stale after three of the naps the hub announced (never under two minutes): a hub that stopped ticking is not
+	# running. No announced nap, no verdict: guessing one called a healthy bare router "Stopped" (it naps up to
+	# 180 min until its check-in).
+	_stale=$((_every * 3)); [ "$_stale" -ge 120 ] || _stale=120
+	if [ "$_every" -eq 0 ] || [ "$_tick" -eq 0 ]; then
+		:
+	elif [ $((NOW - _tick)) -le "$_stale" ]; then
+		_hub=running
+		if [ "$_ok" -gt 0 ] && [ "$_ok" -ge "$_fail" ]; then _cloud=connected; _okago=$((NOW - _ok))
+		elif [ "$_fail" -gt 0 ]; then _cloud=disconnected; [ "$_ok" -gt 0 ] && _okago=$((NOW - _ok))
+		fi
+	else
+		_hub=stopped; _cloud=disconnected
+	fi
+elif pgrep -f /usr/bin/brvg-hub-lite >/dev/null 2>&1; then
+	_hub=running
+elif [ -x /usr/bin/brvg-hub-lite ]; then
+	_hub=stopped; _cloud=disconnected
+fi
+json_add_object hub
+json_add_string state "$_hub"
+[ -n "$_hver" ] && json_add_string version "$_hver"
+json_close_object
+json_add_object cloud
+json_add_string state "$_cloud"
+[ -n "$_okago" ] && [ "$_okago" -ge 0 ] && json_add_int okAgoS "$_okago"
+json_close_object
+
+[ -n "${REQUEST_METHOD:-}" ] && printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
+json_dump
