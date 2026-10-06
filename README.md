@@ -32,8 +32,13 @@ The image is upstream OpenWrt 24.10.8 for the board, plus:
   `/dev/cdc-wdm0`) with the modem's serial ports (`kmod-usb-serial-option`), USB GPS support (`kmod-usb-acm`), and
   the USB port's power switched on at boot (GPIO2, which upstream leaves off). The modem's APN, PIN and
   authentication come across the flash in the site file.
-- **No local web page**: the DockNeighbor apps are the interface. There's no LuCI, and the system
-  uhttpd is disabled. The hub-lite runs its own uhttpd instance for its port-8722 door.
+- **A read-only status page, and nothing else local** (owner ruling 2026-10-05). `http://<router>/` shows whether
+  the internet, the cellular modem and Wi-Fi are working, and whether the hub runs and reaches the cloud (`dn-status`,
+  its own uhttpd instance on :80). Anyone on the LAN can read it; it has no settings and no secrets (no network
+  names, keys or addresses), and it stays up when local administration is turned off. The DockNeighbor apps are the
+  interface for everything else: there's no LuCI, and the system uhttpd is disabled. The hub-lite runs its own
+  uhttpd instance for its port-8722 door. The hub's state comes from `/tmp/dn-hub-status.json` (tmpfs), which the
+  hub writes on each tick; without it the cloud reads "unknown", never "connected".
 
 ### Flashing from the vendor firmware in one step
 
@@ -73,7 +78,7 @@ LAN), `wan` for an internet source such as marina Wi-Fi (restricted, the default
 | Level | Replaces | From | Keeps |
 |---|---|---|---|
 | **1: hub-lite** | the `brvg-hub-lite` package | DockNeighbor-Hub's signed opkg feed (key `b0ff2bec314c57d3`), via the hub-lite's own `self_update` | everything |
-| **1: dn-\* packages** | DockNeighbor OS's own packages (`dn-handoff`, `dn-os-upgrade`, `dn-hub-lite-os`, `dn-net`, `dn-auth`) | this repo's signed `dn_os` feed (key `1c44072d07e3e228`), via `dn-pkg-upgrade` | everything |
+| **1: dn-\* packages** | DockNeighbor OS's own packages (`dn-handoff`, `dn-os-upgrade`, `dn-hub-lite-os`, `dn-net`, `dn-auth`, `dn-status`) | this repo's signed `dn_os` feed (key `1c44072d07e3e228`), via `dn-pkg-upgrade` | everything |
 | **2: OS** | the whole firmware | `dn-os-upgrade`: this repo's signed release channel (key `3420e953f030f5a8`) | settings, the hub-lite's config and member keys |
 
 The image is a known-good baseline for the kernel, drivers and base OS. Every package defined in `feed/` is also
