@@ -6,9 +6,12 @@
 # NO SECRETS AND NO NAMES: no SSIDs, keys, tokens, addresses or client lists. Only states and the OS/hub versions.
 #
 # Every source that can't be read is "unknown", never a pass:
-#   * the hub: /tmp/dn-hub-status.json, written by the hub on each tick (tmpfs). Contract (hub-lite now, the Rust
-#     lite later): {"v":1,"hub":…,"version":…,"tickAt":<epoch>,"tickEveryS":<s>,"cloudOkAt":<epoch|0>,
-#     "cloudFailAt":<epoch|0>}. With no file, a running hub-lite process is "running" and the cloud is "unknown".
+#   * the hub: /tmp/dn-hub-status.json, written by the hub on each loop pass (tmpfs). Contract, agreed with the Hubs
+#     session 2026-10-05 for hub-lite now and the Rust lite later: {"v":1,"hub":"hub-lite"|"daemon","version":…,
+#     "pid":…,"tickAt":<epoch>,"tickEveryS":<the nap this pass is about to take>,"cloudOkAt":<epoch|0>,
+#     "cloudFailAt":<epoch|0>}; 0 means never. tickEveryS is read fresh every time: it changes between passes (a
+#     valve wake drops it to 5 s; a bare router naps until its check-in, up to 180 min). A v1 file without it is
+#     not trusted. With no file, a running hub-lite process is "running" and the cloud is "unknown".
 #   * the cloud: the hub's last report outcome; "connected" only when its last report succeeded.
 #
 # CGI when REQUEST_METHOD is set (uhttpd), plain JSON on stdout otherwise.
@@ -79,10 +82,13 @@ if [ -r "$HUB_STATUS" ] && _hj=$(cat "$HUB_STATUS" 2>/dev/null) && [ "$(printf '
 	_every=$(num "$(printf '%s' "$_hj" | jsonfilter -e '@.tickEveryS' 2>/dev/null)")
 	_ok=$(num "$(printf '%s' "$_hj" | jsonfilter -e '@.cloudOkAt' 2>/dev/null)")
 	_fail=$(num "$(printf '%s' "$_hj" | jsonfilter -e '@.cloudFailAt' 2>/dev/null)")
-	# Stale after three ticks (never under two minutes): a hub that stopped ticking is not running.
-	[ "$_every" -gt 0 ] || _every=300
+	# Stale after three of the naps the hub announced (never under two minutes): a hub that stopped ticking is not
+	# running. No announced nap, no verdict: guessing one called a healthy bare router "Stopped" (it naps up to
+	# 180 min until its check-in).
 	_stale=$((_every * 3)); [ "$_stale" -ge 120 ] || _stale=120
-	if [ "$_tick" -gt 0 ] && [ $((NOW - _tick)) -le "$_stale" ]; then
+	if [ "$_every" -eq 0 ] || [ "$_tick" -eq 0 ]; then
+		:
+	elif [ $((NOW - _tick)) -le "$_stale" ]; then
 		_hub=running
 		if [ "$_ok" -gt 0 ] && [ "$_ok" -ge "$_fail" ]; then _cloud=connected; _okago=$((NOW - _ok))
 		elif [ "$_fail" -gt 0 ]; then _cloud=disconnected; [ "$_ok" -gt 0 ] && _okago=$((NOW - _ok))

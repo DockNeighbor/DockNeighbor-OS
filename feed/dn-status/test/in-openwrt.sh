@@ -88,7 +88,18 @@ run
 eq "180 s: still running" "$(j @.hub.state)" running
 printf '{"v":1,"tickAt":1799999870,"cloudOkAt":1799999870,"cloudFailAt":0}\n' > /tmp/fx/hub.json
 run
-eq "no tickEveryS: 300 s ticks (900 s stale), still running" "$(j @.hub.state)" running
+eq "no tickEveryS: no verdict on the hub" "$(j @.hub.state)" unknown
+eq "nor on the cloud" "$(j @.cloud.state)" unknown
+echo "a bare router naps until its 180-min check-in: two hours since its last pass is still running"
+printf '{"v":1,"hub":"hub-lite","tickAt":1799992800,"tickEveryS":10800,"cloudOkAt":1799992800,"cloudFailAt":0}\n' > /tmp/fx/hub.json
+run
+eq "7200 s into a 10800 s nap: running" "$(j @.hub.state)" running
+eq "and its cloud is connected" "$(j @.cloud.state)" connected
+echo "cloudOkAt 0 means never, not 1970 and not fresh"
+printf '{"v":1,"hub":"daemon","tickAt":1799999990,"tickEveryS":60,"cloudOkAt":0,"cloudFailAt":0}\n' > /tmp/fx/hub.json
+run
+eq "never reported, never failed: unknown" "$(j @.cloud.state)" unknown
+eq "no age for never" "$(j @.cloud.okAgoS)" ""
 
 echo "no hub status file: the process decides the hub, and the cloud is unknown — never a pass"
 rm -f /tmp/fx/hub.json
