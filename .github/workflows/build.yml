@@ -15,65 +15,9 @@ permissions:
   contents: read
 
 jobs:
+  # The tests live in tests.yml so release.yml and feed.yml run the very same ones (FN-9).
   tests:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    outputs:
-      boards: ${{ steps.boards.outputs.list }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Shell syntax
-        run: |
-          set -eu
-          for f in handoff/read-glinet.sh feed/dn-handoff/files/usr/libexec/dn-handoff/apply \
-                   feed/dn-handoff/files/etc/uci-defaults/05-dn-handoff \
-                   feed/dn-os-upgrade/files/usr/sbin/dn-os-upgrade feed/dn-os-upgrade/files/usr/sbin/dn-pkg-upgrade \
-                   feed/dn-os-upgrade/files/etc/uci-defaults/94-dn-os-feed \
-                   feed/dn-hub-lite-os/files/usr/libexec/dn-hub-lite/restore feed/dn-hub-lite-os/files/etc/init.d/dn-hub-lite-restore \
-                   feed/dn-hub-lite-os/files/etc/uci-defaults/95-dn-hub-lite \
-                   feed/dn-net/files/usr/sbin/dn-net feed/dn-net/files/usr/lib/dn-net/uplink.sh \
-                   feed/dn-status/files/usr/libexec/dn-status/status feed/dn-status/files/etc/init.d/dn-status \
-                   feed/dn-status/files/www/dn-status/cgi-bin/status feed/dn-status/test/in-openwrt.sh \
-                   scripts/release-manifest.sh scripts/publish-feed.sh scripts/check-feed-versions.sh \
-                   scripts/build-hub-lite.sh scripts/check-hub-lite-image.sh scripts/hub-lite-board.sh \
-                   scripts/overlay-headroom.sh scripts/test/overlay-headroom.test.sh \
-                   profiles/hub-lite/boards/*/files/etc/uci-defaults/*; do
-            sh -n "$f"
-          done
-      # Every board of the hub-lite profile loads and is consistent (its channel is channel-hub-lite/<device>.json,
-      # its OpenWrt is the profile's); the image jobs below build each one.
-      - name: hub-lite boards
-        id: boards
-        run: |
-          set -eu
-          root=$PWD; . scripts/hub-lite-board.sh
-          for b in $(hub_lite_boards); do (hub_lite_load "$b" && echo "$b: $BOARD_TITLE, OpenWrt $OPENWRT_VERSION $OPENWRT_TARGET, $PKG_ARCH"); done
-          echo "list=$(hub_lite_boards | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
-      - name: Overlay headroom (where rootfs_data starts, jffs2's reserve)
-        run: sh scripts/test/overlay-headroom.test.sh
-      - name: Handoff renderer, on real OpenWrt userland
-        run: sh handoff/test/apply.test.sh
-      - name: Handoff reader (GL.iNet 4.x) then renderer, end to end, on real OpenWrt userland
-        run: sh handoff/test/read.test.sh
-      - name: OS upgrader (level 2), on real OpenWrt userland
-        run: sh feed/dn-os-upgrade/test/upgrade.test.sh
-      - name: Package upgrader (level 1, dn-* packages), on real OpenWrt userland
-        run: sh feed/dn-os-upgrade/test/pkg-upgrade.test.sh
-      - name: dn-auth (the root password check), against musl's crypt
-        run: sh feed/dn-auth/test/auth.test.sh
-      - name: dn-net (the DN device API's OS half), on real OpenWrt userland
-        run: sh feed/dn-net/test/net.test.sh
-      - name: dn-status (the read-only status page), on real OpenWrt userland
-        run: sh feed/dn-status/test/status.test.sh
-      # A DATA BILL, not a code path: the hub-lite restore used to retry for ever at a flat 5 minutes,
-      # running a full `opkg update` each time on a router whose wanted version could never install.
-      - name: hub-lite restore backs off, stops, and stops fetching the package index
-        run: sh feed/dn-hub-lite-os/test/restore.test.sh
-      - name: Every changed package bumps its version (else routers never receive it)
-        if: github.event_name == 'pull_request'
-        run: sh scripts/check-feed-versions.sh "origin/${{ github.base_ref }}"
+    uses: ./.github/workflows/tests.yml
 
   hub-lite:
     needs: tests

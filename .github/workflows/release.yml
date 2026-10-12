@@ -24,6 +24,31 @@ jobs:
       boards: ${{ steps.boards.outputs.list }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # SEC-19: the ancestry step below needs main's full history
+      # 🔒 SEC-19 (security audit 2026-10-11): A TAG SHIPS ONLY A COMMIT THAT IS ALREADY ON MAIN. Every session pushes
+      # as the same account, and nothing else stops `git push origin <tag>` from a feature worktree publishing an
+      # unreviewed commit (tag rulesets need a paid plan on the private repos). Three outcomes, on purpose: on main →
+      # continue; not on main → fail; cannot tell (shallow clone, missing commit, git error) → fail, never pass.
+      # The fetch is a plain one, never --depth: checkout's `fetch-depth: 0` above unshallows the clone, and the
+      # explicit refetch makes origin/main the remote's tip now, not whatever a reused workspace last saw.
+      - name: Refuse a tag whose commit is not on main
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if [ "$(git rev-parse --is-shallow-repository)" != "false" ]; then
+            echo "::error::shallow clone: cannot tell whether ${GITHUB_REF_NAME} is on main. Refusing to publish."; exit 1
+          fi
+          sha=$(git rev-parse --verify --quiet "${GITHUB_SHA}^{commit}") || {
+            echo "::error::${GITHUB_SHA} is not a commit in this clone: cannot tell whether ${GITHUB_REF_NAME} is on main. Refusing to publish."; exit 1; }
+          main=$(git rev-parse --verify refs/remotes/origin/main)
+          rc=0; git merge-base --is-ancestor "$sha" "$main" || rc=$?
+          case "$rc" in
+            0) echo "${GITHUB_REF_NAME} -> ${sha} is on main (origin/main ${main}): publishing allowed" ;;
+            1) echo "::error::${GITHUB_REF_NAME} -> ${sha} is NOT on main (origin/main ${main}). Nothing publishes from an unmerged commit: delete the tag, merge the change to main, and tag the merged commit."; exit 1 ;;
+            *) echo "::error::git merge-base exited ${rc}: cannot tell whether ${GITHUB_REF_NAME} is on main. Refusing to publish."; exit 1 ;;
+          esac
       - name: The tag names the profile's version
         run: |
           set -eu
@@ -62,9 +87,15 @@ jobs:
           path: out/hub-lite/${{ matrix.board }}/
           if-no-files-found: error
 
-  # Every board built and passed its image check before anything is signed or published.
+  # FN-9: the repo's tests (tests.yml, the same job build.yml runs on every PR) must pass on the tagged commit
+  # before anything is signed or published. Runs alongside the image builds; publish needs both.
+  tests:
+    needs: tag
+    uses: ./.github/workflows/tests.yml
+
+  # Every board built and passed its image check, and the tests passed, before anything is signed or published.
   publish:
-    needs: [tag, build]
+    needs: [tag, build, tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

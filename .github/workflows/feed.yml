@@ -26,6 +26,30 @@ jobs:
       list: ${{ steps.boards.outputs.list }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # SEC-19: the ancestry step below needs main's full history
+      # 🔒 SEC-19 (security audit 2026-10-11): ONLY A COMMIT THAT IS ALREADY ON MAIN PUBLISHES. A push to main passes
+      # trivially; this exists for `workflow_dispatch`, which runs on whatever ref the dispatcher picks, so without it
+      # `gh workflow run <this> --ref <any-branch>` publishes an unreviewed commit. Three outcomes, on purpose: on
+      # main → continue; not on main → fail; cannot tell (shallow clone, missing commit, git error) → fail, never pass.
+      # The fetch is a plain one, never --depth: checkout's `fetch-depth: 0` above unshallows the clone, and the
+      # explicit refetch makes origin/main the remote's tip now, not whatever a reused workspace last saw.
+      - name: Refuse a commit that is not on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if [ "$(git rev-parse --is-shallow-repository)" != "false" ]; then
+            echo "::error::shallow clone: cannot tell whether ${GITHUB_REF_NAME} (${GITHUB_SHA}) is on main. Refusing to publish."; exit 1
+          fi
+          sha=$(git rev-parse --verify --quiet "${GITHUB_SHA}^{commit}") || {
+            echo "::error::${GITHUB_SHA} is not a commit in this clone: cannot tell whether it is on main. Refusing to publish."; exit 1; }
+          main=$(git rev-parse --verify refs/remotes/origin/main)
+          rc=0; git merge-base --is-ancestor "$sha" "$main" || rc=$?
+          case "$rc" in
+            0) echo "${GITHUB_REF_NAME} -> ${sha} is on main (origin/main ${main}): publishing allowed" ;;
+            1) echo "::error::${GITHUB_REF_NAME} -> ${sha} is NOT on main (origin/main ${main}). Only main publishes: merge the change, then run this on main."; exit 1 ;;
+            *) echo "::error::git merge-base exited ${rc}: cannot tell whether ${GITHUB_REF_NAME} is on main. Refusing to publish."; exit 1 ;;
+          esac
       - id: boards
         run: |
           set -eu
@@ -59,8 +83,13 @@ jobs:
           path: out/hub-lite/${{ matrix.board }}/feed/
           if-no-files-found: error
 
+  # FN-9: the repo's tests (tests.yml, the same job build.yml runs) must pass before the signed feed is published.
+  tests:
+    needs: boards
+    uses: ./.github/workflows/tests.yml
+
   publish:
-    needs: [boards, build]
+    needs: [boards, build, tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
