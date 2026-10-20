@@ -1,0 +1,3 @@
+OPENWRT_REPO=https://github.com/openwrt/openwrt.git
+OPENWRT_TAG=v24.10.8
+OPENWRT_COMMIT=0b795ce79e23b553aa184080c390f9ce92a2b6d4

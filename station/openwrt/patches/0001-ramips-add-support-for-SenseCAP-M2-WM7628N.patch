@@ -1,0 +1,235 @@
+From b3e44638279ac0aa77a075a451b0a183da665c16 Mon Sep 17 00:00:00 2001
+From: SC4 Technologies <noreply@anthropic.com>
+Date: Sat, 19 Sep 2026 00:10:51 -0400
+Subject: [PATCH] ramips: add support for SenseCAP M2 (WM7628N)
+
+Ported from Seeed's OpenWrt 21.02 tree to 24.10: MACs and the Wi-Fi EEPROM come from nvmem
+cells in factory (EEPROM at 0x0, WMAC at 0x4, Ethernet at 0x2e), so neither interface falls back
+to a random address. LAN = port 1, WAN = port 0.
+---
+ .../ramips/dts/mt7628an_sensecap_wm7628n.dts  | 148 ++++++++++++++++++
+ target/linux/ramips/image/mt76x8.mk           |  10 ++
+ .../mt76x8/base-files/etc/board.d/01_leds     |   4 +
+ .../mt76x8/base-files/etc/board.d/02_network  |   8 +-
+ 4 files changed, 169 insertions(+), 1 deletion(-)
+ create mode 100644 target/linux/ramips/dts/mt7628an_sensecap_wm7628n.dts
+
+diff --git a/target/linux/ramips/dts/mt7628an_sensecap_wm7628n.dts b/target/linux/ramips/dts/mt7628an_sensecap_wm7628n.dts
+new file mode 100644
+index 0000000..47a6e7c
+--- /dev/null
++++ b/target/linux/ramips/dts/mt7628an_sensecap_wm7628n.dts
+@@ -0,0 +1,148 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++// SenseCAP M2 (WM7628N). Ported from Seeed's OpenWrt 21.02 tree (Seeed-Solution/LoRa_Gateway_OpenWRT)
++// to 24.10: MACs and the Wi-Fi EEPROM come from nvmem cells in `factory` (measured on a bench M2:
++// EEPROM at 0x0 with the WMAC address at 0x4; the Ethernet address at 0x2e — 0x28 is empty).
++
++#include "mt7628an.dtsi"
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++
++/ {
++	compatible = "sensecap,wm7628n", "mediatek,mt7628an-soc";
++	model = "SenseCAP WM7628N";
++
++	keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			gpios = <&gpio 40 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		wlan {
++			label = "green:wlan";
++			gpios = <&gpio 44 GPIO_ACTIVE_LOW>;
++		};
++
++		wan {
++			label = "green:wan";
++			gpios = <&gpio 42 GPIO_ACTIVE_LOW>;
++		};
++
++		lora {
++			label = "green:lora";
++			gpios = <&gpio 36 GPIO_ACTIVE_LOW>;
++		};
++	};
++};
++
++&state_default {
++	gpio {
++		groups = "i2s", "p1led_an", "p2led_an", "spis", "wdt", "pwm0", "pwm1", "perst", "wled_an", "p4led_an", "refclk";
++		function = "gpio";
++	};
++};
++
++&uart1 {
++	status = "okay";
++};
++
++&uart2 {
++	status = "okay";
++};
++
++&i2c {
++	status = "okay";
++};
++
++&sdhci {
++	status = "okay";
++};
++
++&spi0 {
++	status = "okay";
++
++	pinctrl-0 = <&spi_pins>, <&spi_cs1_pins>;
++	cs-gpios = <0>, <0>, <&gpio 18 0>;
++
++	flash@0 {
++		compatible = "jedec,spi-nor";
++		reg = <0>;
++		spi-max-frequency = <10000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "u-boot";
++				reg = <0x0 0x30000>;
++				read-only;
++			};
++
++			partition@30000 {
++				label = "u-boot-env";
++				reg = <0x30000 0x10000>;
++			};
++
++			partition@40000 {
++				label = "factory";
++				reg = <0x40000 0x10000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					eeprom_factory_0: eeprom@0 {
++						reg = <0x0 0x400>;
++					};
++
++					macaddr_factory_2e: macaddr@2e {
++						reg = <0x2e 0x6>;
++					};
++				};
++			};
++
++			/* The whole rest of the flash, whatever the flashing firmware's own layout said. */
++			partition@50000 {
++				compatible = "denx,uimage";
++				label = "firmware";
++				reg = <0x50000 0x1fb0000>;
++			};
++		};
++	};
++
++	/* The LoRa concentrator (SX1302) and its companion, as spidev for concentratord. */
++	spidev@1 {
++		compatible = "rohm,dh2228fv";
++		reg = <1>;
++		spi-max-frequency = <10000000>;
++	};
++
++	spidev@2 {
++		compatible = "rohm,dh2228fv";
++		reg = <2>;
++		spi-max-frequency = <10000000>;
++	};
++};
++
++&ethernet {
++	nvmem-cells = <&macaddr_factory_2e>;
++	nvmem-cell-names = "mac-address";
++};
++
++&wmac {
++	status = "okay";
++
++	nvmem-cells = <&eeprom_factory_0>;
++	nvmem-cell-names = "eeprom";
++};
+diff --git a/target/linux/ramips/image/mt76x8.mk b/target/linux/ramips/image/mt76x8.mk
+index f1873a7..0ab7da6 100644
+--- a/target/linux/ramips/image/mt76x8.mk
++++ b/target/linux/ramips/image/mt76x8.mk
+@@ -589,6 +589,16 @@ define Device/ravpower_rp-wd009
+ endef
+ TARGET_DEVICES += ravpower_rp-wd009
+ 
++define Device/sensecap_wm7628n
++  IMAGE_SIZE := 32448k
++  DEVICE_VENDOR := SenseCAP
++  DEVICE_MODEL := WM7628N
++  DEVICE_ALT0_VENDOR := SenseCAP
++  DEVICE_ALT0_MODEL := M2 Multi-Platform
++  DEVICE_PACKAGES := kmod-spi-dev
++endef
++TARGET_DEVICES += sensecap_wm7628n
++
+ define Device/skylab_skw92a
+   IMAGE_SIZE := 16064k
+   DEVICE_VENDOR := Skylab
+diff --git a/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds b/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
+index e1612ec..2666617 100644
+--- a/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
++++ b/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
+@@ -48,6 +48,10 @@ hilink,hlk-7628n|\
+ skylab,skw92a)
+ 	ucidef_set_led_netdev "wifi_led" "wifi" "green:wlan" "wlan0"
+ 	;;
++sensecap,wm7628n)
++	ucidef_set_led_netdev "wifi_led" "wifi" "green:wlan" "wlan0"
++	ucidef_set_led_switch "wan" "wan" "green:wan" "switch0" "0x01"
++	;;
+ hilink,hlk-7688a)
+ 	ucidef_set_led_wlan "wlan" "WLAN" "green:wlan" "phy0tpt"
+ 	;;
+diff --git a/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network b/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
+index b47c499..84bf596 100644
+--- a/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
++++ b/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
+@@ -109,7 +109,8 @@ ramips_setup_interfaces()
+ 		;;
+ 	duzun,dm06|\
+ 	glinet,gl-mt300n-v2|\
+-	hongdian,h7920-v40)
++	hongdian,h7920-v40|\
++	sensecap,wm7628n)
+ 		ucidef_add_switch "switch0" \
+ 			"1:lan" "0:wan" "6@eth0"
+ 		;;
+@@ -259,6 +260,11 @@ ramips_setup_macs()
+ 		wan_mac=$(mtd_get_mac_binary factory 0x2e)
+ 		label_mac=$(mtd_get_mac_binary factory 0x4)
+ 		;;
++	sensecap,wm7628n)
++		wan_mac=$(mtd_get_mac_binary factory 0x2e)
++		lan_mac=$(macaddr_setbit_la "$wan_mac")
++		label_mac=$(mtd_get_mac_binary factory 0x4)
++		;;
+ 	duzun,dm06|\
+ 	hongdian,h7920-v40|\
+ 	hongdian,h8850-v20|\
+-- 
+2.50.1 (Apple Git-155)
+
