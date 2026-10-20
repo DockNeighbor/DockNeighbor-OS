@@ -45,21 +45,31 @@ away, and gives the people who tie up with you a reason to stay.
 
 ## What is in this repository
 
-DockNeighbor OS is built on OpenWrt, and this repository is where the firmware is assembled and where
-the source that OpenWrt's licences require is published: the board support for the DockNeighbor
-Station, the OpenWrt build configuration, and a source archive for each station release. DockNeighbor's
-own software, the apps, the cloud, and the station's services, is private and proprietary and is not
-here.
+This repository is the source for the open-source software in DockNeighbor Station images. The station
+runs OpenWrt, which is mostly licensed under the GNU General Public License, version 2 (GPL-2.0). That
+licence requires the source, including DockNeighbor's changes, to be available to everyone who receives the
+software. It is published here:
 
-The repository also still carries the `hub-lite` profile for the GL.iNet routers that DockNeighbor
-supported before the station. That product is retired: no new images are offered for it, and the
-profile is kept only until its last devices are moved over.
+- the board support for the SenseCAP M2, as a patch to OpenWrt (`station/openwrt/patches/`);
+- the OpenWrt build configuration (`station/openwrt/bootstrap.diffconfig`) and the exact OpenWrt release it
+  builds on (`station/openwrt/VERSION`);
+- the OpenWrt files the station image replaces (`station/openwrt/files/`);
+- a source archive for each station release, on this repository's Releases page.
+
+[station/README.md](station/README.md) says how these fit together.
+
+DockNeighbor's own software is not included. The station's own packages (the `dn-*` entries in the build
+configuration), the apps and the cloud are private and proprietary.
+
+The GL.iNet router images ("hub-lite") this repository built before the station are retired. Their build
+files remain at the `hub-lite-os-v*` tags.
 
 Questions about the product belong on the website's [support page](https://www.dockneighbor.com/support/).
 Questions about this repository's licences and source are welcome as issues here.
 
 ## Licence
 
-The build scripts and packages in this repository are Apache-2.0; see [NOTICE](NOTICE). The OpenWrt
-base and the Linux kernel carry their own licences, and their source, including DockNeighbor's changes
-to them, is published here for every station release.
+The scripts in this repository are Apache-2.0; see [NOTICE](NOTICE). The files under `station/openwrt/`
+change OpenWrt and are under its licence, GPL-2.0, except where a file names its own (the M2's device tree
+is GPL-2.0-or-later OR MIT). OpenWrt, the Linux kernel and the other open-source packages in a station image
+carry their own licences, and their source is in each station release's source archive.

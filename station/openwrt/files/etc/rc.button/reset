@@ -1,0 +1,30 @@
+#!/bin/sh
+# DockNeighbor OS: the M2's one button (replaces upstream base-files' handler). dn-setup holds the tiers
+# (/usr/libexec/dn-setup/button; owner ruling R84), so they update from the signed feed (R44):
+#   release under 5 s — open the setup window for 10 minutes
+#   hold 5 s          — network reset: forget the Wi-Fi, keep the pairing, open the setup window
+#   hold 15 s         — full factory reset
+# dn-setup installs this same file over an older image's (its uci-defaults 93-dn-setup-button); a host test keeps
+# the two copies identical. Upstream reboots on a short press; an appliance shouldn't restart on an accidental tap.
+[ -x /usr/libexec/dn-setup/button ] && exec /usr/libexec/dn-setup/button
+
+# No dn-setup: the image's own rules (a short press asks for the setup window; 5 s or more is a factory reset).
+OVERLAY="$( grep ' /overlay ' /proc/mounts )"
+case "$ACTION" in
+pressed)
+	[ -z "$OVERLAY" ] && return 0
+	return 5
+;;
+released)
+	if [ "$SEEN" -lt 5 ]
+	then
+		mkdir -p /var/run/dn && touch /var/run/dn/setup-button
+	elif [ -n "$OVERLAY" ]
+	then
+		echo "FACTORY RESET" > /dev/console
+		jffs2reset -y && reboot &
+	fi
+;;
+esac
+
+return 0

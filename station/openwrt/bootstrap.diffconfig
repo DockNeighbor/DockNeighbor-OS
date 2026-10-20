@@ -1,0 +1,50 @@
+# DockNeighbor OS — the BOOTSTRAP image for the SenseCAP M2.
+# Flashed once from the stock web upgrade page, so the sysupgrade image must fit the stock
+# `firmware` partition (0x00a00000 = 10 MiB) — scripts/check-image-size.sh enforces it.
+# Everything else (the radio, the station agent) is downloaded after first boot.
+CONFIG_TARGET_ramips=y
+CONFIG_TARGET_ramips_mt76x8=y
+CONFIG_TARGET_ramips_mt76x8_DEVICE_sensecap_wm7628n=y
+CONFIG_IMAGEOPT=y
+CONFIG_VERSIONOPT=y
+CONFIG_VERSION_DIST="DockNeighbor OS"
+CONFIG_VERSION_NUMBER="0.4.2-bootstrap"
+CONFIG_VERSION_MANUFACTURER="SC4 Technologies"
+# No SSH server in the image (SEC-18; doc 12 §3.1 "SSH off"). OpenWrt's default dropbear listened on :22 with password
+# and root logins on while root's password was blank. Support sessions (R94) bring their OWN key-only dropbear in the
+# dn-support feed package; the serial console still gives root. build.sh and scripts/check-image-trust.sh enforce it,
+# and dn-agent's uci-defaults (94-dn-access) turns the old dropbear off on stations flashed before this.
+# CONFIG_PACKAGE_dropbear is not set
+# No PPPoE at a marina gateway.
+# CONFIG_PACKAGE_ppp is not set
+# CONFIG_PACKAGE_ppp-mod-pppoe is not set
+# The concentrator is on SPI; kernel modules must come from this build, never a later download.
+CONFIG_PACKAGE_kmod-spi-dev=y
+# The concentrator's temperature sensor is on I2C (/dev/i2c-0 in ChirpStack's M2 config).
+CONFIG_PACKAGE_kmod-i2c-core=y
+CONFIG_PACKAGE_kmod-i2c-mt7628=y
+# Bluetooth (R23: foundational, so it's in the image, not the feed). The M2's module is H4 on ttyS1, which
+# stock kmod-bluetooth's hci_uart already speaks: no kernel patch, no firmware (doc 14, bench 2026-09-24).
+CONFIG_PACKAGE_kmod-bluetooth=y
+CONFIG_PACKAGE_dn-bt=y
+# Setup over Bluetooth LE (R23/R24, doc 12 §3.3).
+CONFIG_PACKAGE_dn-setup=y
+CONFIG_PACKAGE_usign=y
+# TRUST: the station installs only what the DockNeighbor feed key signed. SIGNED_PACKAGES would bake in the
+# build's own auto-generated "Local build key" (its secret sits on the build host) and pull in
+# openwrt-keyring (OpenWrt's release key). Signature CHECKING is a separate option and stays on.
+# scripts/check-image-trust.sh proves it on the finished image.
+# CONFIG_SIGNED_PACKAGES is not set
+# CONFIG_PACKAGE_openwrt-keyring is not set
+CONFIG_SIGNATURE_CHECK=y
+# The station agent (feed/dn-agent): enroll, the StationLink socket, self-update from the signed feed.
+CONFIG_PACKAGE_dn-agent=y
+# The software set the agent installs from the signed feed. Built as a package (=m), NOT into the image:
+# the bootstrap stays small (R8) and the feed carries it.
+CONFIG_PACKAGE_dn-station=m
+# The radio daemon (doc 17): from the feed with the radio, never in the image.
+CONFIG_PACKAGE_dn-stationd=m
+# Support sessions (R94, doc 26): from the feed, never in the image (its own dropbear stays out of the 10 MB bootstrap).
+CONFIG_PACKAGE_dn-support=m
+# The radio, from ChirpStack's MIT feed (pinned in scripts/build.sh), as feed packages (R21).
+CONFIG_PACKAGE_chirpstack-concentratord-target-seeed-sensecap-m2=m
